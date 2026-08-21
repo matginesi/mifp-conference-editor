@@ -25,10 +25,10 @@
       }
     }());
   </script>
-  <link rel="stylesheet" href="./assets/css/base.css">
-  <link rel="stylesheet" href="./assets/css/layout.css">
-  <link rel="stylesheet" href="./assets/css/components.css">
-  <link rel="stylesheet" href="./assets/css/responsive.css">
+  <link rel="stylesheet" href="./assets/css/base.css?v=1.18.1">
+  <link rel="stylesheet" href="./assets/css/layout.css?v=1.18.1">
+  <link rel="stylesheet" href="./assets/css/components.css?v=1.18.1">
+  <link rel="stylesheet" href="./assets/css/responsive.css?v=1.18.1">
   <script>
     window.addEventListener('error', function (event) {
       var file = String(event.filename || '');
@@ -45,7 +45,7 @@
         <div><div class="brand-title">MIFP Conference Editor</div><div class="brand-subtitle">offline workspace</div></div>
       </div>
       <div class="top-actions">
-        <span class="version-badge">Editor 1.18.0</span>
+        <span class="version-badge">Editor 1.18.1</span>
         <span id="saveState" class="save-state neutral">No project open</span>
         <button id="previewSiteBtn" class="button ghost" type="button" disabled>Preview site</button>
         <button id="exportZipBtn" class="button ghost" type="button" disabled>Export ZIP</button>
@@ -55,16 +55,15 @@
 
     <aside class="sidebar" aria-label="Editor navigation">
       <div class="workspace-box">
-        <div class="eyebrow">Workspace</div>
-        <div id="workspaceName" class="workspace-name">Not opened</div>
-        <div id="projectName" class="project-name">Select conference</div>
+        <div class="eyebrow">Conference</div>
+        <div id="workspaceName" class="workspace-name">No folder selected</div>
+        <div id="projectName" class="project-name">No conference open</div>
         <div class="button-stack">
-          <button id="openWorkspaceBtn" class="button" type="button">Open</button>
-          <button id="openFolderFallbackBtn" class="button ghost" type="button">Import folder</button>
+          <button id="openWorkspaceBtn" class="button primary" type="button">Open conference</button>
+          <button id="newConferenceBtn" class="button" type="button">New conference</button>
           <input id="folderFallbackInput" type="file" webkitdirectory multiple hidden>
         </div>
         <div id="projectPickerWrap" class="project-picker hidden"><label for="projectPicker">Conference</label><select id="projectPicker"></select></div>
-        <button id="newConferenceBtn" class="button ghost hidden" type="button">New conference</button>
       </div>
       <nav class="nav-list">
         <button class="nav-item active" data-view="overview" type="button">Overview</button>
@@ -84,7 +83,7 @@
     <main class="main">
       <section class="view active" data-view-panel="overview">
         <div class="page-head"><div><div class="eyebrow">Conference workspace</div><h1>Overview</h1><p>Manage configuration, assets, people and program from one local editor.</p></div><div class="page-actions"><button id="openSiteBtn" class="button ghost" type="button" disabled>Preview site</button></div></div>
-        <div id="welcomePanel" class="empty-state"><div><h2>Open the workspace</h2><p>Direct save works with browsers supporting local filesystem access. Fallback folder import keeps changes in memory and exports a complete ZIP.</p><div class="inline-actions"><button id="welcomeOpenBtn" class="button primary" type="button">Open workspace</button><button id="welcomeFallbackBtn" class="button" type="button">Import folder</button></div></div></div>
+        <div id="welcomePanel" class="empty-state"><div><h2>Open or create a conference</h2><p>Open an existing conference folder/workspace, or create a clean conference from the bundled TEMPLATE. New conferences start with placeholder-only content, empty People and an empty Program.</p><div class="inline-actions"><button id="welcomeOpenBtn" class="button primary" type="button">Open conference</button><button id="welcomeNewBtn" class="button" type="button">New conference</button></div></div></div>
         <div id="overviewContent" class="hidden">
           <div id="overviewCards" class="stat-grid"></div>
           <div class="panel-grid three">
@@ -172,11 +171,11 @@
     <div id="totemBackdrop" class="totem-backdrop hidden" role="presentation"><section class="totem" role="alertdialog" aria-modal="true" aria-labelledby="totemTitle" aria-describedby="totemMessage"><div class="totem-accent" aria-hidden="true"></div><div class="totem-content"><div id="totemEyebrow" class="eyebrow">MIFP Editor</div><h2 id="totemTitle">Confirm action</h2><p id="totemMessage"></p><label id="totemInputWrap" class="totem-input hidden"><span>Value</span><input id="totemInput" type="text" autocomplete="off"></label><div class="totem-actions"><button id="totemCancelBtn" class="button ghost" type="button">Cancel</button><button id="totemConfirmBtn" class="button primary" type="button">Continue</button></div></div></section></div>
     <div id="modalBackdrop" class="modal-backdrop hidden" role="presentation"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-head"><h2 id="modalTitle">Dialog</h2><button id="modalClose" class="icon-button" type="button" aria-label="Close">×</button></div><div id="modalBody" class="modal-body"></div></div></div>
   </div>
-  <script src="./assets/js/lib/yaml-lite.js"></script>
-  <script src="./assets/js/lib/csv.js"></script>
-  <script src="./assets/js/lib/zip-lite.js"></script>
-  <script src="./assets/js/lib/xlsx-lite.js"></script>
-  <script src="./assets/js/lib/document-tools.js"></script>
-  <script src="./assets/js/editor/app.js"></script>
+  <script src="./assets/js/lib/yaml-lite.js?v=1.18.1"></script>
+  <script src="./assets/js/lib/csv.js?v=1.18.1"></script>
+  <script src="./assets/js/lib/zip-lite.js?v=1.18.1"></script>
+  <script src="./assets/js/lib/xlsx-lite.js?v=1.18.1"></script>
+  <script src="./assets/js/lib/document-tools.js?v=1.18.1"></script>
+  <script src="./assets/js/editor/app.js?v=1.18.1"></script>
 </body>
 </html>

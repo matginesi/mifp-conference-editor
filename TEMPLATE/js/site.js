@@ -331,7 +331,6 @@
   }
 
   function registrationAwareTarget(value) {
-    if (registrationEnabled()) return value;
     const candidate = normalizeLocalHref(value);
     const known = [
       'registration.html',
@@ -340,7 +339,11 @@
       get('registration.registration_url', ''),
       get('conference.registration_url', '')
     ].map(normalizeLocalHref).filter(Boolean);
-    return known.includes(candidate) ? registrationUnavailableUrl() : value;
+    if (!known.includes(candidate)) return value;
+    // All registration entry points share one canonical destination. This also
+    // fixes older conference YAML files whose hero/button still says
+    // registration.html: when registration is enabled they open regform/.
+    return registrationEnabled() ? registrationActiveUrl() : registrationUnavailableUrl();
   }
 
   // The global Registration CTA remains visible when registration is not yet
