@@ -8,7 +8,7 @@ A local, offline-first editor for building and maintaining reusable conference w
 
 The editor is designed around a simple idea: **conference data should remain portable, inspectable and deployable without a CMS or application backend**. Conference content lives in YAML/CSV files and local assets; the editor provides a structured UI on top of them.
 
-> **Repository scope:** this repository contains the editor and reusable document templates. Real conference instances are intentionally kept outside version control.
+> **Repository scope:** this repository contains the editor, printable document templates and the placeholder-only `TEMPLATE/` scaffold. Real conference instances are intentionally kept outside version control.
 
 ## Live editor
 
@@ -16,7 +16,7 @@ Once GitHub Pages is enabled for this repository, the editor is available at:
 
 **https://matginesi.github.io/mifp-conference-editor/**
 
-The hosted editor can be used to open a local workspace in a Chromium-based browser. For full local preview of a conference website, DOCX template filling and PHP registration testing, run the editor from a local HTTP server as described below.
+The hosted editor can open and edit a local workspace in a Chromium-based browser. **Preview site** builds an in-memory preview from the selected local conference, so ignored conference folders do not need to be published to GitHub Pages. PHP registration testing still requires a PHP-capable local/server environment.
 
 ## Features
 
@@ -28,7 +28,7 @@ The hosted editor can be used to open a local workspace in a Chromium-based brow
 - Local asset browser and replacement tools.
 - Editorial **TBD / TBC / TBA / TODO** checker with navigation back to unresolved content.
 - Conference versioning and ZIP export.
-- **New conference** workflow that creates a placeholder conference from an available workspace scaffold.
+- **New conference** creates a clean conference from the versioned `TEMPLATE/` / bundled scaffold: no old conference text, empty People, empty Program, placeholder dates/venue/content and no copied registration submissions or secrets.
 
 ### People
 
@@ -38,7 +38,7 @@ The hosted editor can be used to open a local workspace in a Chromium-based brow
 - Exact duplicate cleanup and similar-name review.
 - Multi-role normalization while preserving meaningful committee roles.
 - Face-image association through `assets/people/`.
-- Portable **People bundle ZIP** containing people data, manifest and referenced face images.
+- Portable **People bundle ZIP** containing CSV/XLSX data, manifest and the conference face-image set from `assets/people/` (plus any explicitly referenced image paths).
 - Bundle re-import through the same merge/deduplication workflow.
 
 ### Program
@@ -46,10 +46,10 @@ The hosted editor can be used to open a local workspace in a Chromium-based brow
 - Flat, spreadsheet-style conference program.
 - CSV and XLSX import/export.
 - Flexible schedule rows without graph IDs or parent/child editing.
-- Public Program PDF can be:
-  - generated from `program.csv`,
-  - provided as a local uploaded PDF,
-  - or hidden.
+- Public Program PDF source is explicitly selectable in the Program editor:
+  - **Generate from `program.csv`** using the browser PDF generator;
+  - **Use uploaded local PDF** from `assets/documents/`;
+  - **Hide PDF download** entirely.
 
 ### Badges and certificates
 
@@ -131,7 +131,9 @@ A workspace is simply a directory containing one or more conference folders.
 
 The editor discovers the available projects after opening that directory. Conference folders remain local and can be deployed or archived independently.
 
-`config/workspace.json` contains editor-level workspace settings. The preferred reusable scaffold directory name is `TEMPLATE`.
+A workspace may also be empty: after opening it, **New conference** can create the first placeholder project. The generated project contains the complete static/PHP scaffold but starts with `TBC`/placeholder editorial content, empty `people.csv`, empty `program.csv`, generic placeholder artwork, and clean registration storage. Use **Content Check** to walk through unresolved values before publishing.
+
+`config/workspace.json` contains editor-level workspace settings. `TEMPLATE/` is the canonical placeholder-only conference scaffold and is intentionally versioned. A compressed copy is also shipped as `templates/conference-template.zip`, allowing **New conference** to work even when the selected local workspace does not already contain a template folder.
 
 ## Architecture
 
@@ -146,9 +148,11 @@ mifp-conference-editor/
 │       └── lib/
 ├── config/
 │   └── workspace.json
+├── TEMPLATE/                    # placeholder-only conference scaffold
 ├── templates/
 │   ├── badges_template.docx
-│   └── certificate_template.docx
+│   ├── certificate_template.docx
+│   └── conference-template.zip # bundled New conference scaffold
 ├── index.html
 └── README.md
 ```
@@ -173,7 +177,7 @@ After enabling GitHub Pages with `main / (root)` as the source, the editor will 
 https://matginesi.github.io/mifp-conference-editor/
 ```
 
-GitHub Pages is useful for hosting the editor UI. Conference instances remain local and excluded from this repository. Full local conference preview and PHP registration testing should still be done with a local server.
+GitHub Pages hosts only the editor UI. Conference instances remain local and excluded from the repository. The editor preview uses local files through an in-memory virtual preview, so a URL such as `/mifp-conference-editor/PLMCN-2027/` is not required. PHP registration testing still needs a PHP server.
 
 ## Privacy and data
 

@@ -14,3 +14,6 @@ Thumbs.db
 # Python cache, if temporary scripts are ever used
 __pycache__/
 *.py[cod]
+
+# Bundled placeholder scaffold used by New conference
+!templates/conference-template.zip

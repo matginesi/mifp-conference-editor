@@ -2,7 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[MIFP-EDITOR]';
-  const EDITOR_VERSION = '1.17.1';
+  const EDITOR_VERSION = '1.18.0';
   const supportsFsAccess = typeof window.showDirectoryPicker === 'function';
   const MAX_LOGS = 500;
   const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','avif']);
@@ -40,7 +40,9 @@
     documentPreviewPerson: { badges:null, certificates:null },
     documentPreviewToken: { badges:0, certificates:0 },
     sheetObservers: { people:null, program:null },
-    totem: { resolve:null, mode:'confirm' }
+    totem: { resolve:null, mode:'confirm' },
+    previewWindow: null,
+    previewUrls: []
   };
 
   const $ = (id) => document.getElementById(id);
@@ -170,8 +172,8 @@
     els.assetSearch.addEventListener('input', renderAssets);
     els.assetChooseBtn.addEventListener('click', () => els.assetFileInput.click());
     els.assetFileInput.addEventListener('change', handleAddOrReplaceAsset);
-    els.openSiteBtn.addEventListener('click', openConferenceSite);
-    els.previewSiteBtn.addEventListener('click', openConferenceSite);
+    els.openSiteBtn.addEventListener('click', () => openConferencePreview('index.html'));
+    els.previewSiteBtn.addEventListener('click', () => openConferencePreview('index.html'));
     els.settingsSectionSearch.addEventListener('input', renderSettingsSectionNav);
     if (els.sectionYamlEditor) els.sectionYamlEditor.addEventListener('input', () => {
       state.sectionYamlDirty = true;
@@ -207,6 +209,14 @@
         event.preventDefault();
         event.returnValue = '';
       }
+    });
+
+    window.addEventListener('message', (event) => {
+      const data = event && event.data;
+      if (!data || data.type !== 'mifp-preview-open-page') return;
+      if (!state.previewWindow || event.source !== state.previewWindow) return;
+      if (data.project !== state.projectName) return;
+      openConferencePreview(String(data.page || 'index.html'), { reuse:true });
     });
   }
 
@@ -320,7 +330,8 @@
       updateWorkspaceUi();
       log('info', 'workspace.opened', { name: handle.name, projects: projects.map((item) => item.name) });
       if (!projects.length) {
-        toast('No conference.yaml found in this folder or its direct subfolders.', 'error');
+        populateProjectPicker();
+        toast('No conference found yet. Use “New conference” to create a clean placeholder conference.', 'success');
         return;
       }
       populateProjectPicker();
@@ -409,8 +420,10 @@
       els.projectPicker.append(option);
     });
     els.projectPickerWrap.classList.toggle('hidden', state.projects.length < 2);
-    const hasScaffold = state.projects.some((project) => project.handle && !project.direct);
-    els.newConferenceBtn.classList.toggle('hidden', !(state.mode === 'fs' && state.rootHandle && hasScaffold && !state.projects[0]?.direct));
+    const directWorkspace = state.projects.length === 1 && state.projects[0] && state.projects[0].direct === true;
+    // A workspace root may be empty or contain only real conferences: the editor
+    // can always create a new conference from its bundled placeholder scaffold.
+    els.newConferenceBtn.classList.toggle('hidden', !(state.mode === 'fs' && state.rootHandle && !directWorkspace));
   }
 
   function showProjectModal(projects) {
@@ -1579,9 +1592,12 @@
       const headers=state.people.headers.slice();
       const csv=window.CsvUtil.serialize(state.people.rows,headers,{bom:false,eol:'\r\n',finalEol:true,protectFormulae:false});
       const xlsx=await window.XlsxLite.build(state.people.rows,headers,{sheetName:'People'});
-      const imagePaths=Array.from(new Set(state.people.rows.map((row)=>String(row.Image||'').trim()).filter(Boolean)));
-      const assets=[];imagePaths.forEach((path)=>{const asset=state.assets.find((item)=>item.path===path);if(asset)assets.push(asset);});
-      const manifest={schema:'mifp.people.bundle.v1',project:state.projectName||'',exported_at:new Date().toISOString(),people_count:state.people.rows.length,headers,people_csv:'data/people.csv',people_xlsx:'data/people.xlsx',face_images:assets.map((asset)=>asset.path)};
+      const referenced=Array.from(new Set(state.people.rows.map((row)=>String(row.Image||'').trim()).filter(Boolean)));
+      const assetMap=new Map();
+      state.assets.filter((item)=>item.path.startsWith('assets/people/')&&PREVIEWABLE_EXTENSIONS.has(extensionOf(item.path))).forEach((item)=>assetMap.set(item.path,item));
+      referenced.forEach((path)=>{const asset=state.assets.find((item)=>item.path===path);if(asset)assetMap.set(path,asset);});
+      const assets=Array.from(assetMap.values()).sort((a,b)=>a.path.localeCompare(b.path));
+      const manifest={schema:'mifp.people.bundle.v1',project:state.projectName||'',exported_at:new Date().toISOString(),people_count:state.people.rows.length,headers,people_csv:'data/people.csv',people_xlsx:'data/people.xlsx',face_images:assets.map((asset)=>asset.path),referenced_face_images:referenced};
       const entries=[{path:'manifest.json',data:JSON.stringify(manifest,null,2)+'\n'},{path:'data/people.csv',data:csv},{path:'data/people.xlsx',data:xlsx}];
       assets.forEach((asset)=>entries.push({path:asset.path,data:asset.blob}));
       const blob=await window.ZipLite.createBlob(entries,{root:'people-bundle'});
@@ -2369,6 +2385,10 @@
   function clearObjectUrls() {
     state.objectUrls.forEach((url) => URL.revokeObjectURL(url));
     state.objectUrls = [];
+    state.previewUrls.forEach((url) => { try { URL.revokeObjectURL(url); } catch (_) {} });
+    state.previewUrls = [];
+    if (state.previewWindow && !state.previewWindow.closed) { try { state.previewWindow.close(); } catch (_) {} }
+    state.previewWindow = null;
   }
 
   function chooseReplacementForAsset(path) {
@@ -2526,29 +2546,67 @@
 
   async function createConferenceFromTemplate() {
     if (state.mode !== 'fs' || !state.rootHandle) return;
-    const template = state.projects.find((project) => project.name === 'TEMPLATE' && project.handle)
-      || state.projects.find((project) => project.name === state.projectName && project.handle)
-      || state.projects.find((project) => project.handle && project.name !== 'TEMPLATE');
-    if (!template) { toast('No conference scaffold is available in this workspace.', 'error'); return; }
-    const requested = await totemPrompt('New conference','Create a clean conference scaffold with placeholder content, empty People and an empty Program.','NEW-CONFERENCE',{inputLabel:'Folder / acronym',inputPlaceholder:'ICP2DC-2028'});
+    const requested = await totemPrompt(
+      'New conference',
+      'Create a completely clean conference: reusable site files, placeholder-only conference.yaml, empty People and empty Program. No data is copied from another conference.',
+      '',
+      {inputLabel:'Folder / acronym',inputPlaceholder:'ICP2DC-2028'}
+    );
     if (requested == null) return;
     const name = requested.trim();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,79}$/.test(name)) { toast('Use only letters, numbers, dot, dash and underscore.', 'error'); return; }
-    if (name === 'TEMPLATE') { toast('Choose a different folder name.', 'error'); return; }
+    if (['TEMPLATE','NEW-CONFERENCE'].includes(name.toUpperCase())) { toast('Enter the real conference folder/acronym, for example ICP2DC-2028.', 'error'); return; }
+
+    let created = false;
     try {
       try { await state.rootHandle.getDirectoryHandle(name); throw new Error('Folder already exists'); }
       catch (error) { if (error.message === 'Folder already exists') throw error; if (error.name !== 'NotFoundError') throw error; }
+
       const dest = await state.rootHandle.getDirectoryHandle(name, { create: true });
-      await copyDirectory(template.handle, dest);
+      created = true;
+      const localTemplate = state.projects.find((project) => project.name === 'TEMPLATE' && project.handle);
+      let scaffold = 'bundled placeholder template';
+      if (localTemplate) {
+        await copyDirectory(localTemplate.handle, dest);
+        scaffold = 'TEMPLATE';
+      } else {
+        const entries = await loadBundledConferenceTemplateEntries();
+        await writeTemplateEntriesToDirectory(entries, dest);
+      }
+
       await initializePlaceholderConference(dest, name);
-      state.projects = await discoverFsProjects(state.rootHandle); populateProjectPicker();
+      state.projects = await discoverFsProjects(state.rootHandle);
+      populateProjectPicker();
       const project = state.projects.find((item) => item.name === name);
-      log('info', 'conference.created_blank', { name, scaffold:template.name });
-      toast('Created blank conference '+name+' with placeholder content.', 'success');
+      log('info', 'conference.created_blank', { name, scaffold, placeholderOnly:true });
+      toast('Created '+name+': placeholder-only conference, empty People and empty Program.', 'success');
       if (project) await loadProject(project);
     } catch (error) {
+      if (created) {
+        try { await state.rootHandle.removeEntry(name, { recursive:true }); } catch (_) {}
+      }
       log('error', 'conference.create_failed', { name, message: error.message });
       toast('Could not create conference: ' + error.message, 'error');
+    }
+  }
+
+  async function loadBundledConferenceTemplateEntries() {
+    if (location.protocol === 'file:') throw new Error('The bundled template cannot be fetched from file://. Open the repository workspace so its TEMPLATE folder is available, or serve the editor over HTTP.');
+    const url = new URL('templates/conference-template.zip', document.baseURI);
+    const response = await fetch(url, { cache:'no-store', credentials:'same-origin' });
+    if (!response.ok) throw new Error('Bundled placeholder template is unavailable (HTTP '+response.status+').');
+    const entries = stripBundleRoot(await readZipEntries(await response.blob()));
+    if (!entries.has('conference.yaml')) throw new Error('Bundled placeholder template is invalid: conference.yaml is missing.');
+    return entries;
+  }
+
+  async function writeTemplateEntriesToDirectory(entries, destination) {
+    for (const [path, blob] of entries.entries()) {
+      const safe = normalizeProjectPath(path);
+      const handle = await getFileHandleByPath(destination, safe, true);
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
     }
   }
 
@@ -2563,33 +2621,70 @@
     return value;
   }
 
+  async function replacePlaceholderTokenInDirectory(dir, token, replacement) {
+    const textual = new Set(['html','css','js','yaml','yml','json','md','txt','php','htaccess','gitignore','xml']);
+    async function walk(current) {
+      for await (const [entryName, handle] of current.entries()) {
+        if (handle.kind === 'directory') { await walk(handle); continue; }
+        const ext = extensionOf(entryName) || entryName.replace(/^\./,'').toLowerCase();
+        if (!textual.has(ext)) continue;
+        const file = await handle.getFile();
+        let text;
+        try { text = await file.text(); } catch (_) { continue; }
+        if (!text.includes(token)) continue;
+        const writable = await handle.createWritable();
+        await writable.write(text.split(token).join(replacement));
+        await writable.close();
+      }
+    }
+    await walk(dir);
+  }
+
   async function initializePlaceholderConference(dest, name) {
-    const configHandle=await getFileHandleByPath(dest,'conference.yaml',false);const originalText=await (await configHandle.getFile()).text();let cfg=window.YamlLite.parse(originalText);
-    const old=cfg.conference&&typeof cfg.conference==='object'?cfg.conference:{};
-    const replacements=[[old.acronym,name],[old.full_name,'TBC'],[old.city,'TBC'],[old.country,'TBC'],[old.venue,'TBC'],[old.date_label,'TBC'],[old.start_date,'TBC'],[old.end_date,'TBC']].filter(([from])=>String(from||'').trim());
-    cfg=replaceConferenceFacts(cfg,replacements);
+    // The source scaffold is already neutral. Replace only the explicit template
+    // token; never derive the new conference from the currently opened project.
+    await replacePlaceholderTokenInDirectory(dest, 'NEW-CONFERENCE', name);
+
+    const configHandle=await getFileHandleByPath(dest,'conference.yaml',false);
+    const originalText=await (await configHandle.getFile()).text();
+    let cfg=window.YamlLite.parse(originalText);
     if(!cfg.conference||typeof cfg.conference!=='object')cfg.conference={};
-    Object.assign(cfg.conference,{acronym:name,full_name:'TBC',city:'TBC',country:'TBC',venue:'TBC',start_date:'',end_date:'',date_label:'TBC',base_url:'TBC'});
-    if(cfg.site&&typeof cfg.site==='object'){cfg.site.title=name;cfg.site.short_name=name;if('description'in cfg.site)cfg.site.description='TBC';}
-    if(cfg.hero&&typeof cfg.hero==='object'){if('title'in cfg.hero)cfg.hero.title=name;if('subtitle'in cfg.hero)cfg.hero.subtitle='TBC';if('description'in cfg.hero)cfg.hero.description='TBC';}
-    if(cfg.committee&&typeof cfg.committee==='object'){cfg.committee.label='People';cfg.committee.title='Committee';cfg.committee.intro='Committee membership is TBC.';delete cfg.committee.members_title;delete cfg.committee.members_role;}
+    Object.assign(cfg.conference,{acronym:name,full_name:'TBC',city:'TBC',country:'TBC',venue:'TBC',address:'TBC',timezone:'TBC',email:'TBC',phone:'TBC',contact_name:'TBC',emergency_contact:'TBC',start_date:'',end_date:'',date_label:'TBC'});
+    if(cfg.site&&typeof cfg.site==='object'){cfg.site.title=name;cfg.site.short_name=name;cfg.site.year='TBC';cfg.site.base_url='TBC';cfg.site.description='TBC';cfg.site.keywords='TBC';}
+    if(cfg.hero&&typeof cfg.hero==='object'){cfg.hero.title=name;cfg.hero.subtitle='TBC';cfg.hero.eyebrow='TBC';cfg.hero.meta='TBC';cfg.hero.description='TBC';}
+    if(cfg.committee&&typeof cfg.committee==='object'){cfg.committee.label='People';cfg.committee.title='Committee';cfg.committee.intro='Committee membership for '+name+' is TBC.';delete cfg.committee.members_title;delete cfg.committee.members_role;}
     if(cfg.program&&typeof cfg.program==='object'){
-      cfg.program.title=name+' Program';cfg.program.intro='Program TBC.';cfg.program.empty_message='Program TBC.';
-      if(!cfg.program.download||typeof cfg.program.download!=='object')cfg.program.download={};Object.assign(cfg.program.download,{enabled:true,mode:'generated',label:'Download program PDF',local_file:'assets/documents/program.pdf',local_filename:name+'-program.pdf',generated_filename:name+'-program.pdf'});
-      if(cfg.program.pdf&&typeof cfg.program.pdf==='object'){cfg.program.pdf.filename=name+'-program.pdf';cfg.program.pdf.title=name;}
+      cfg.program.title=name+' Program';cfg.program.intro='TBC';cfg.program.empty_message='Program TBC.';
+      if(!cfg.program.download||typeof cfg.program.download!=='object')cfg.program.download={};
+      Object.assign(cfg.program.download,{enabled:true,mode:'generated',label:'Download program PDF',local_file:'assets/documents/program.pdf',local_filename:name+'-program.pdf',generated_filename:name+'-program.pdf'});
+      if(!cfg.program.pdf||typeof cfg.program.pdf!=='object')cfg.program.pdf={};
+      cfg.program.pdf.filename=name+'-program.pdf';cfg.program.pdf.title=name;cfg.program.pdf.subtitle='TBC';
     }
     if(cfg.important_dates&&typeof cfg.important_dates==='object')cfg.important_dates.items=[{date:'TBC',description:'TBC'}];
-    const yaml=window.YamlLite.stringify(cfg);const writable=await configHandle.createWritable();await writable.write(yaml.endsWith('\n')?yaml:yaml+'\n');await writable.close();
+    if(cfg.documents&&cfg.documents.certificates&&Array.isArray(cfg.documents.certificates.signatures)){
+      cfg.documents.certificates.signatures.forEach((sig)=>{if(sig&&typeof sig==='object'){sig.name='TBC';sig.affiliation='TBC';}});
+    }
+    const yaml=window.YamlLite.stringify(cfg);
+    const writable=await configHandle.createWritable();
+    await writable.write(yaml.endsWith('\n')?yaml:yaml+'\n');
+    await writable.close();
+
     const peopleHeaders=['First Name','Last Name','Category','Role','Affiliation','Country','Presentation Title','Presentation Type','Image','Visible'];
     const programHeaders=['Day','Date','Start Time','End Time','Type','Title','Speaker','Affiliation','Chair','Location','Notes','Visible'];
     const peoplePath=(cfg.runtime&&cfg.runtime.people_csv)||'data/people.csv',programPath=(cfg.runtime&&cfg.runtime.program_csv)||'data/program.csv';
-    const ph=await getFileHandleByPath(dest,peoplePath,true),pw=await ph.createWritable();await pw.write(window.CsvUtil.serialize([],peopleHeaders,{bom:false,eol:'\r\n',finalEol:true,protectFormulae:false}));await pw.close();
-    const gh=await getFileHandleByPath(dest,programPath,true),gw=await gh.createWritable();await gw.write(window.CsvUtil.serialize([],programHeaders,{bom:false,eol:'\r\n',finalEol:true,protectFormulae:false}));await gw.close();
-    const versionHandle=await getFileHandleByPath(dest,'conference.version.json',true),vw=await versionHandle.createWritable();await vw.write(JSON.stringify({schema:1,version:'0.1.0',status:'draft',updated_at:new Date().toISOString(),history:[]},null,2)+'\n');await vw.close();
+    const ph=await getFileHandleByPath(dest,peoplePath,true),pw=await ph.createWritable();
+    await pw.write(window.CsvUtil.serialize([],peopleHeaders,{bom:false,eol:'\r\n',finalEol:true,protectFormulae:false}));await pw.close();
+    const gh=await getFileHandleByPath(dest,programPath,true),gw=await gh.createWritable();
+    await gw.write(window.CsvUtil.serialize([],programHeaders,{bom:false,eol:'\r\n',finalEol:true,protectFormulae:false}));await gw.close();
+    const versionHandle=await getFileHandleByPath(dest,'conference.version.json',true),vw=await versionHandle.createWritable();
+    await vw.write(JSON.stringify({schema:1,version:'0.1.0',status:'draft',updated_at:new Date().toISOString(),history:[]},null,2)+'\n');await vw.close();
+
+    // Never carry registration submissions, secrets, rate-limit state or user uploads
+    // into a new conference, even if a custom TEMPLATE folder contains them.
     try {
       const reg=await dest.getDirectoryHandle('regform');const storage=await reg.getDirectoryHandle('registrations');
       for await (const [entryName,entryHandle] of storage.entries()) {
-        if (entryName === 'index.php') continue;
+        if (['index.php','.htaccess','.gitignore'].includes(entryName)) continue;
         await storage.removeEntry(entryName,{recursive:entryHandle.kind==='directory'});
       }
     } catch (_) {}
@@ -2992,17 +3087,139 @@
   function templateReplacements(kind,p){const v=conferenceVisuals(),pres=presentationForPerson(p)||{},presentationLine=pres.title?(pres.label||'Presentation'):'';const sig=Array.isArray(v.signatures)?v.signatures:[];const s1=sig[0]||{},s2=sig[1]||{},s3=sig[2]||{},s4=sig[3]||{};return {DOC_SURNAME:p['Last Name']||'',DOC_NAME:p['First Name']||'',DOC_CONF_SHORT:v.shortName,DOC_CONF_FULL:v.fullName,DOC_LOCATION:kind==='badge'?(v.badgeLocation||''):v.location,DOC_DATE_RANGE:v.date,DOC_DATE:v.date,DOC_ROLE:String(p.Category||p.Role||'').split(/[;,|]/)[0].trim(),AFFILIATION_:p.Affiliation||'',COUNTRY_:p.Country||'',DOC_PRESENTATION_LINE:presentationLine,DOC_PRESENTED_PREFIX:presentationLine,DOC_PRESENTATION_TYPE:pres.type||'',DOC_ABSTRACT_TITLE:pres.title||'',DOC_ORGANIZER_ADDRESS:v.organizerAddress||'',DOC_PHONE:v.phone||'',DOC_EMAIL:v.email||'',DOC_SIGN_1_TITLE:s1.title||'',DOC_SIGN_1_NAME:s1.name||'',DOC_SIGN_1_AFF:s1.affiliation||'',DOC_SIGN_2_TITLE:s2.title||'',DOC_SIGN_2_NAME:s2.name||'',DOC_SIGN_2_AFF:s2.affiliation||'',DOC_SIGN_3_TITLE:s3.title||'',DOC_SIGN_3_NAME:s3.name||'',DOC_SIGN_3_AFF:s3.affiliation||'',DOC_SIGN_4_TITLE:s4.title||'',DOC_SIGN_4_NAME:s4.name||'',DOC_SIGN_4_AFF:s4.affiliation||'',DOC_CHAIR_LEFT:s1.name||'',DOC_CHAIR_LEFT_AFF:s1.affiliation||'',DOC_CHAIR_RIGHT:s2.name||'',DOC_CHAIR_RIGHT_AFF:s2.affiliation||''};}
   async function downloadFilledTemplateDocs(kind,report){const setKind=kind==='badge'?'badges':'certificates',people=selectedPeople(setKind);if(!people.length)throw new Error('Select at least one person for export.');report=typeof report==='function'?report:()=>{};report(6,'Loading DOCX template');const template=await loadBundledTemplate(kind),entries=[],v=conferenceVisuals(),media={};report(14,'Loading logos');const org=await projectAssetAsPng(v.organizerPath);const second=await projectAssetAsPng(kind==='certificate'?v.certificateCenterPath:v.confPath);const third=kind==='certificate'?await projectAssetAsPng(v.certificateStampPath):await projectAssetAsPng(v.badgeFooterPath);if(org)media['word/media/image1.png']=org;if(second)media['word/media/image2.png']=second;if(third)media['word/media/image3.png']=third;for(let i=0;i<people.length;i++){const p=people[i],blob=await window.DocumentTools.fillDocxTemplate(template,templateReplacements(kind,p),media),name=slugify([p['Last Name'],p['First Name']].filter(Boolean).join('-'))||'person';entries.push({path:name+'.docx',data:blob});report(18+((i+1)/people.length)*68,'Creating DOCX '+(i+1)+' / '+people.length);await nextPaint();}report(90,entries.length===1?'Preparing DOCX':'Packing DOCX archive');if(entries.length===1)downloadBlob(entries[0].path,entries[0].data);else downloadBlob((state.projectName||'conference')+'-'+setKind+'-template-docx.zip',await window.ZipLite.createBlob(entries));report(100,'DOCX ready');log('info','documents.template_docx_exported',{kind,count:entries.length});}
 
-  function openConferenceSite() {
-    if (!state.config) return;
-    if (location.protocol === 'file:') {
-      toast('Preview needs the workspace served locally over HTTP (for example php -S 127.0.0.1:8000). The editor itself can still edit from file://.', 'error');
-      log('warn', 'preview.file_protocol_blocked', { project: state.projectName });
-      return;
+  function resolvePreviewProjectPath(basePath, value) {
+    const raw=String(value||'').trim();
+    if(!raw || raw.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith('//')) return '';
+    const clean=raw.split(/[?#]/)[0].replace(/^\/+/, '');
+    const base=String(basePath||'').replace(/\\/g,'/');
+    const parts=(base.includes('/')?base.slice(0,base.lastIndexOf('/')+1):'').split('/').filter(Boolean);
+    clean.split('/').forEach((part)=>{if(!part||part==='.')return;if(part==='..')parts.pop();else parts.push(part);});
+    return parts.join('/');
+  }
+
+  function rewritePreviewCss(text, cssPath, assetUrls) {
+    return String(text||'').replace(/url\(\s*(['"]?)([^)'"\\]+)\1\s*\)/g,(whole,_q,raw)=>{
+      const value=String(raw||'').trim();
+      if(!value || value.startsWith('#') || /^(?:data:|blob:|https?:|\/\/)/i.test(value)) return whole;
+      const path=resolvePreviewProjectPath(cssPath,value);
+      const mapped=path&&assetUrls[path];
+      return mapped?'url("'+mapped+'")':whole;
+    });
+  }
+
+  function patchSiteRuntimeForPreview(text) {
+    let out=String(text||'');
+    out=out.replace("const SITE_ROOT = new URL('../', SCRIPT_URL);","const SITE_ROOT = window.__MIFP_PREVIEW_ROOT__ ? new URL(window.__MIFP_PREVIEW_ROOT__) : new URL('../', SCRIPT_URL);");
+    out=out.replace(
+      "  function localUrl(path) {\n    const value = str(path).trim();",
+      "  function localUrl(path) {\n    const value = str(path).trim();\n    if (window.__MIFP_PREVIEW_ASSET_URLS__) {\n      const clean=value.replace(/^\\.\\//,'').replace(/^\\/+/, '').split(/[?#]/)[0];\n      if (/\\.html$/i.test(clean)) return '#mifp-preview:' + clean;\n      if (/^regform\\/?$/i.test(clean)) return '#mifp-preview:registration.html';\n      if (window.__MIFP_PREVIEW_ASSET_URLS__[clean]) return window.__MIFP_PREVIEW_ASSET_URLS__[clean];\n    }"
+    );
+    out=out.replace(
+      "  async function fetchText(url, label) {\n    const started = performance.now();",
+      "  async function fetchText(url, label) {\n    const started = performance.now();\n    if (window.__MIFP_PREVIEW_TEXT__) {\n      let pathname=''; try { pathname=decodeURIComponent(new URL(url.href || String(url)).pathname).replace(/^\\/+/, ''); } catch (_) {}\n      const keys=Object.keys(window.__MIFP_PREVIEW_TEXT__);\n      const key=keys.find((item)=>pathname===item || pathname.endsWith('/'+item));\n      if (key) { const text=window.__MIFP_PREVIEW_TEXT__[key]; log('debug','load',label+' loaded from editor preview',{bytes:text.length,path:key}); return text; }\n    }"
+    );
+    return out;
+  }
+
+  function previewJson(value) {
+    return JSON.stringify(value).replace(/</g,'\\u003c').replace(/>/g,'\\u003e').replace(/&/g,'\\u0026').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+  }
+
+  function previewBootstrap(assetUrls, textFiles, projectName) {
+    const root='https://mifp-preview.local/'+encodeURIComponent(projectName||'conference')+'/';
+    return `<script>\nwindow.__MIFP_PREVIEW_ROOT__=${previewJson(root)};\nwindow.__MIFP_PREVIEW_ASSET_URLS__=${previewJson(assetUrls)};\nwindow.__MIFP_PREVIEW_TEXT__=${previewJson(textFiles)};\nwindow.__MIFP_PREVIEW_PROJECT__=${previewJson(projectName||'')};\ndocument.addEventListener('click',function(event){var a=event.target&&event.target.closest?event.target.closest('a[href^="#mifp-preview:"]'):null;if(!a)return;event.preventDefault();var page=a.getAttribute('href').slice('#mifp-preview:'.length)||'index.html';if(window.opener&&!window.opener.closed)window.opener.postMessage({type:'mifp-preview-open-page',project:window.__MIFP_PREVIEW_PROJECT__,page:page},'*');});\n</script>`;
+  }
+
+  async function buildConferencePreviewUrl(pageFile) {
+    const entries=await collectProjectEntriesForExport();
+    const files=new Map(entries.map((entry)=>[normalizeProjectPath(entry.path),entry.data instanceof Blob?entry.data:new Blob([entry.data]) ]));
+    const page=normalizeProjectPath(pageFile||'index.html');
+    if(!files.has(page)) throw new Error('Preview page not found: '+page);
+
+    const urls=[];
+    const makeUrl=(blob)=>{const url=URL.createObjectURL(blob);urls.push(url);return url;};
+    const assetUrls=Object.create(null);
+    const textFiles=Object.create(null);
+
+    // Binary/static assets first, so CSS and YAML-driven image references can use them.
+    for(const [path,blob] of files.entries()){
+      const ext=extensionOf(path);
+      if(['html','htm','css','js','yaml','yml','csv'].includes(ext))continue;
+      assetUrls[path]=makeUrl(blob);
     }
-    const base = state.projectPrefix || (state.projectName ? state.projectName + '/' : '');
-    const target = new URL(base + 'index.html', location.href);
-    window.open(target, '_blank', 'noopener');
-    log('info', 'preview.opened', { project: state.projectName, url: target.pathname });
+    for(const [path,blob] of files.entries()){
+      const ext=extensionOf(path);
+      if(['yaml','yml','csv'].includes(ext)) textFiles[path]=await blob.text();
+    }
+
+    // Rewrite CSS url(...) references to object URLs.
+    for(const [path,blob] of files.entries()){
+      if(extensionOf(path)!=='css')continue;
+      const css=rewritePreviewCss(await blob.text(),path,assetUrls);
+      assetUrls[path]=makeUrl(new Blob([css],{type:'text/css;charset=utf-8'}));
+    }
+
+    // Turn scripts into object URLs. site.js gets a tiny virtual-filesystem shim.
+    for(const [path,blob] of files.entries()){
+      if(extensionOf(path)!=='js')continue;
+      let code=await blob.text();
+      if(/(^|\/)site\.js$/i.test(path)) code=patchSiteRuntimeForPreview(code);
+      assetUrls[path]=makeUrl(new Blob([code],{type:'text/javascript;charset=utf-8'}));
+    }
+
+    let html=await files.get(page).text();
+    // The real site CSP is intentionally strict. Blob/object URLs used only by the
+    // editor preview need a separate execution context, so remove CSP from preview.
+    html=html.replace(/<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>\s*/ig,'');
+    html=html.replace(/<link\b([^>]*?)href=(["'])([^"']+)\2([^>]*)>/ig,(whole,before,q,href,after)=>{
+      const path=resolvePreviewProjectPath(page,href);const mapped=path&&assetUrls[path];
+      return mapped?`<link${before}href=${q}${mapped}${q}${after}>`:whole;
+    });
+    html=html.replace(/<script\b([^>]*?)src=(["'])([^"']+)\2([^>]*)><\/script>/ig,(whole,before,q,src,after)=>{
+      const path=resolvePreviewProjectPath(page,src);const mapped=path&&assetUrls[path];
+      return mapped?`<script${before}src=${q}${mapped}${q}${after}></script>`:whole;
+    });
+    html=html.replace(/<a\b([^>]*?)href=(["'])([^"']+)\2([^>]*)>/ig,(whole,before,q,href,after)=>{
+      const raw=String(href||'');
+      if(raw.startsWith('#')||/^[a-z][a-z0-9+.-]*:/i.test(raw))return whole;
+      const path=resolvePreviewProjectPath(page,raw);
+      if(path&&/\.html$/i.test(path))return `<a${before}href=${q}#mifp-preview:${path}${q}${after}>`;
+      if(path&&/^regform\/?$/i.test(path))return `<a${before}href=${q}#mifp-preview:registration.html${q}${after}>`;
+      if(path&&assetUrls[path])return `<a${before}href=${q}${assetUrls[path]}${q}${after}>`;
+      return whole;
+    });
+    const bootstrap=previewBootstrap(assetUrls,textFiles,state.projectName);
+    if(/<\/head>/i.test(html))html=html.replace(/<\/head>/i,bootstrap+'\n</head>');else html=bootstrap+html;
+    const pageUrl=makeUrl(new Blob([html],{type:'text/html;charset=utf-8'}));
+    return {url:pageUrl,urls};
+  }
+
+  async function openConferencePreview(pageFile, options) {
+    if (!state.config) return;
+    const requested=String(pageFile||'index.html').split(/[?#]/)[0]||'index.html';
+    const oldUrls=state.previewUrls.slice();
+    const reuse=options&&options.reuse&&state.previewWindow&&!state.previewWindow.closed;
+    let previewWindow=state.previewWindow;
+    if(!reuse){
+      // Open synchronously inside the click gesture so Chromium does not treat
+      // the finished in-memory preview as an unsolicited popup.
+      previewWindow=window.open('','MIFPConferencePreview');
+      if(!previewWindow){toast('The browser blocked the preview window. Allow pop-ups for the editor.','error');return;}
+      state.previewWindow=previewWindow;
+      try{previewWindow.document.open();previewWindow.document.write('<!doctype html><title>Building preview…</title><style>body{font:14px system-ui;background:#111315;color:#e5e7eb;padding:32px}strong{display:block;font-size:18px;margin-bottom:8px}</style><strong>Building conference preview…</strong><span>'+escapeHtml(state.projectName)+'</span>');previewWindow.document.close();}catch(_){}
+    }
+    try {
+      const built=await buildConferencePreviewUrl(requested);
+      state.previewUrls=built.urls;
+      previewWindow.location.href=built.url;
+      window.setTimeout(()=>oldUrls.forEach((url)=>{try{URL.revokeObjectURL(url);}catch(_){}}),2500);
+      log('info','preview.opened',{project:state.projectName,page:requested,mode:'in-memory'});
+      toast('Preview opened from the local conference data. Nothing is published to GitHub Pages.','success');
+    } catch(error) {
+      log('error','preview.failed',{project:state.projectName,page:requested,message:error.message});
+      try{previewWindow.document.body.innerHTML='<pre style="white-space:pre-wrap;font:14px system-ui;padding:24px">Preview failed: '+escapeHtml(error.message)+'</pre>';}catch(_){}
+      toast('Could not build preview: '+error.message,'error');
+    }
   }
 
   function downloadText(filename, text, type) { downloadBlob(filename, new Blob([text], { type: type || 'text/plain;charset=utf-8' })); }
