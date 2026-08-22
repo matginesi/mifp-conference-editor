@@ -131,21 +131,29 @@ function send_admin_mail_with_attachment(array $recipients, string $subject, str
 
 function build_summary_rows(array $data): array
 {
-    return [
-        'First name' => $data['first_name'],
-        'Last name' => $data['last_name'],
-        'Email' => $data['email'],
-        'Affiliation / Institution / Company' => $data['affiliation'],
-        'Country' => $data['country'],
-        'Full address' => $data['address'],
-        'Arrival date' => $data['arrival_date'],
-        'Departure date' => $data['departure_date'],
-        'T-shirt size' => $data['tshirt_size'] !== '' ? $data['tshirt_size'] : '—',
-        'Dietary choice' => $data['dietary_choice'],
-        'Dietary notes' => $data['dietary_notes'] !== '' ? $data['dietary_notes'] : '—',
-        'Registration type' => $data['registration_type'],
-        'Payment method' => $data['payment_method'],
+    $labels = [
+        'first_name' => 'First name',
+        'last_name' => 'Last name',
+        'email' => 'Email',
+        'affiliation' => 'Affiliation / Institution / Company',
+        'country' => 'Country',
+        'address' => 'Full address',
+        'arrival_date' => 'Arrival date',
+        'departure_date' => 'Departure date',
+        'tshirt_size' => 'T-shirt size',
+        'dietary_choice' => 'Dietary choice',
+        'dietary_notes' => 'Dietary notes',
+        'registration_type' => 'Registration type',
+        'payment_method' => 'Payment method',
     ];
+    $rows = [];
+    foreach ($labels as $key => $label) {
+        if (!array_key_exists($key, $data)) continue;
+        $value = is_bool($data[$key]) ? ($data[$key] ? 'Yes' : 'No') : trim((string)$data[$key]);
+        if ($value === '' && in_array($key, ['tshirt_size', 'dietary_choice', 'dietary_notes'], true)) continue;
+        $rows[$label] = $value !== '' ? $value : '—';
+    }
+    return $rows;
 }
 
 function email_html(string $event, string $heading, string $receiptId, array $data, string $note): string

@@ -1,60 +1,53 @@
 # MIFP Secure Registration Form
 
-Self-contained PHP registration page for the conference template. It stays isolated in `regform/`, but **all configuration comes from the main `../conference.yaml`**.
+Self-contained PHP registration module. Public conference content remains in `../conference.yaml`; **all operational form settings live separately in `regform/settings.yaml`**.
 
-## Configure
+## Configuration split
 
-Edit only `conference.yaml`.
+`../conference.yaml` contains participant-facing registration information: fees, deadlines, payment instructions and the public link to `regform/`.
 
-The public conference/contact email is read from:
-
-```yaml
-conference:
-  email: TBC
-```
-
-The PHP registration behaviour is controlled under `registration.form`:
+`settings.yaml` contains only the isolated form configuration:
 
 ```yaml
-registration:
-  form:
-    mode: php
-    action: regform/
-    submit_enabled: true
-    back_url: ../registration.html
-    privacy_url: ../privacy.html
-    mail:
-      from_name: MIFP Registration
-      subject_prefix: "[MIFP]"
-      send_user_confirmation: true
-    backend:
-      max_upload_mb: 5
-      storage_path: registrations
-      persist_submissions: true
-      rate_limit_requests: 5
-      rate_limit_window_seconds: 900
-      minimum_fill_seconds: 2
-      trust_proxy: true
-      trusted_proxies:
-        - 127.0.0.1
-        - "::1"
+regform:
+  enabled: true
+  submit_enabled: true
+  back_url: ../registration.html
+  privacy_url: ../privacy.html
+  mail:
+    from_email: secretary@mifp.eu
+    from_name: MIFP Registration
+    reply_to_email: contact@example.org
+    admin_emails:
+      - secretary@mifp.eu
+    subject_prefix: "[MIFP]"
+    send_user_confirmation: true
+  backend:
+    max_upload_mb: 5
+    storage_path: registrations
+    persist_submissions: true
+    rate_limit_requests: 5
+    rate_limit_window_seconds: 900
+    minimum_fill_seconds: 2
+    trust_proxy: true
+    trusted_proxies:
+      - 127.0.0.1
+      - "::1"
 ```
 
-For the current local test setup, `conference.email`, `mail.from_email` and the only `mail.admin_emails` recipient are `TBC`. Keep SMTP credentials out of `conference.yaml`: PHP `mail()` should use the local mail transport configured on the server.
+Form fields and their allowed select values are also defined under `regform.sections` in the same dedicated file. PHP reads `conference.yaml` only for public conference identity/registration information and `regform/settings.yaml` for the form itself.
 
-The allowed registration categories, payment methods, T-shirt sizes and dietary choices are read directly from the options already defined in `registration.form.sections`.
+`settings.yaml` is denied by `regform/.htaccess` and must never contain SMTP passwords or other secrets. Mail transport credentials belong in the server configuration, not in YAML.
 
 ## Local test
 
-Run the conference root with PHP, not with a static-only server:
+Run the conference root with PHP:
 
 ```bash
 php -S 127.0.0.1:8000
 ```
 
-Then open `http://127.0.0.1:8000/regform/` directly, or use any Registration CTA on the conference site.
-
-For email delivery, PHP `mail()` must have a working local mail transport. A valid submission is saved locally before email is attempted, so an SMTP problem does not discard the registration or proof of payment.
+Then open `http://127.0.0.1:8000/regform/`.
 
 ## Security
 
@@ -63,19 +56,26 @@ For email delivery, PHP `mail()` must have a working local mail transport. A val
 - Honeypot and minimum form-fill time.
 - Server-side allowlist validation for select values and strict date/email validation.
 - Proof-of-payment upload limit plus MIME/signature validation; only PDF, JPEG and PNG are accepted.
-- The client filename is never used for storage or attachment naming.
-- The registration is appended to `registrations/registrations.csv` and the proof is stored under `registrations/proofs/` using a server-generated name.
 - Organizer notification and participant confirmation are separate messages.
-- `registrations/` is denied by `.htaccess`; runtime data should not be committed to source control.
+- `settings.yaml` and `registrations/` are denied by Apache rules.
 - PHP errors are logged server-side and are not rendered to visitors.
-- CSP, no-sniff, referrer, frame, permissions, no-cache and no-index headers are emitted by PHP.
 
 ## Storage
 
-The default `regform/registrations/` directory contains `registrations.csv` and the `proofs/` subdirectory. It is protected by `.htaccess` on Apache. For a production deployment, an absolute writable directory outside the document root is still preferable when the hosting layout allows it.
-
-The CSV is append-only during normal form operation. Proof files are stored as `proof-<internal-id>.<ext>`; the original uploaded filename is never used.
+The default `regform/registrations/` directory stores the CSV and proof files and is protected by `.htaccess`. An absolute writable directory outside the document root remains preferable where hosting allows it.
 
 ## PHP
 
-Designed for PHP 8.0+ and requires the standard `session`, `filter` and `fileinfo` extensions. If the optional PHP YAML extension is installed it is used; otherwise the form includes its own small parser for the YAML subset used by this template.
+Designed for PHP 7.4+ (including PHP 8.x) and standard `session`, `filter` and `fileinfo` extensions. If ext-yaml is unavailable, the module uses its bundled limited YAML parser.
+## Appearance and form schema
+
+The registration page inherits `appearance.default_theme`, `appearance.default_palette`, theme/palette tokens and conference branding from `../conference.yaml`. Form sections and fields are rendered and validated from `regform/settings.yaml`; removing an optional section does not require editing PHP.
+
+## Aruba / shared hosting
+
+The bundled `.htaccess` intentionally uses only `mod_rewrite` rules. Do not add `Options -Indexes` or Apache authorization directives such as `Require all denied` on Aruba shared Linux hosting: unsupported directives can make the whole `regform/` directory return HTTP 500. Sensitive `settings.yaml`, `src/`, and `registrations/` paths are denied through rewrite rules; PHP files also contain direct-access guards.
+
+
+## PHP 7.4 compatibility
+
+The module intentionally avoids PHP 8-only syntax and runtime helpers. `mixed` type declarations and native `str_contains()` / `str_starts_with()` calls are not used; small prefixed compatibility helpers provide the required string checks. This keeps the same code deployable on legacy PHP 7.4 shared hosting and on current PHP 8.x installations.

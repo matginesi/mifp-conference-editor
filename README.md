@@ -1,3 +1,65 @@
+## 1.22.10
+
+- Regform is now compatible with PHP 7.4 as well as PHP 8.x.
+- Removed PHP 8-only `mixed` type declarations and native `str_contains()` / `str_starts_with()` dependencies from the registration module.
+- Added small prefixed compatibility helpers and applied the same code to PLMCN-2027, TEMPLATE, and the embedded New conference template ZIP.
+
+## 1.22.9
+
+- Regform deployment compatibility fix for Aruba/shared Linux hosting.
+- Replaced `Options -Indexes` / Apache authz directives with `mod_rewrite`-only protection for `settings.yaml`, `src/`, and `registrations/`.
+- Applied the same regform protection to PLMCN-2027, TEMPLATE, and the embedded conference template ZIP.
+
+## 1.22.8
+- Demo People now uses explicit placeholder-style values (`First Name 01`, `Last Name 01`, `Affiliation 01`, etc.) instead of realistic personal names.
+- Home Speakers now shows a themed TBC card whenever there are no visible Invited Speaker rows, matching the full Speakers page fallback.
+- Updated PLMCN-2027 and TEMPLATE site asset cache versions to 1.6.8.
+
+## 1.22.7
+- People editor: Demo People now loads a normal editable dataset. Save People / Save all persists it to `people.csv`; until the first save, Restore previous People returns to the prior list.
+- Export ZIP and site preview use the currently loaded People rows, including unsaved demo rows.
+- Updated the conference UI Kit to document current states and components, including TBC people state and media galleries.
+
+## 1.22.6
+- Speakers page: polished TBC state when no configured people are published.
+- People editor: non-destructive Demo People mode for realistic site previews; demo rows are never saved to people.csv or exported in conference ZIPs.
+
+## 1.22.5
+- Reworked image editing throughout the editor: large current preview, clear Choose/Upload/Replace/View/Remove actions, advanced path hidden by default, searchable visual asset picker, and clearer missing-image state.
+- Image galleries now open as image collections with thumbnails in item headers and a dedicated “Add image” action.
+- Badge/certificate logo and stamp selectors now use the same visual image workflow instead of plain selects.
+
+## 1.22.4
+
+- Regform theme contrast audit: fixed visited CTA colors, dark-theme accent text contrast, focus states, and cache-busting for regform assets.
+
+## 1.22.3
+
+- Fixed the registration form bootstrap when optional fields/sections are removed from `regform/settings.yaml` (for example the PLMCN-2027 dietary section).
+- Registration fields are now rendered and validated from the actual `regform/settings.yaml` sections instead of a stale hard-coded field list.
+- The registration page inherits the conference `appearance` theme/palette and uses the conference branding assets while retaining the dedicated secure PHP backend.
+- Updated both `PLMCN-2027/regform` and `TEMPLATE/regform`, including the embedded New conference template ZIP.
+
+## 1.22.2
+- Rebuilt Content Editor → Program → download as a dedicated compact editor.
+- Download mode is now a two-choice select: generated from program.csv or local PDF; visibility is controlled separately by Enabled.
+- Contextual local/generated filename controls and a cleaner PDF asset picker/upload workflow.
+
+## 1.22.1
+
+- Fixed New/Add, Delete, Duplicate and move controls for arrays inside the dedicated Regform settings page.
+- Regform array mutations now re-render the Regform page instead of the Content Editor.
+- Adding an item after deleting all sections/fields now creates a valid structured section/field template.
+- Regform asset chooser/upload refreshes the correct page.
+- Added explicit diagnostic logging for failed array mutations.
+
+## 1.22.0
+
+- Regform is now a dedicated sidebar page.
+- Badge title uses the full conference identifier (for example PLMCN-2027).
+- Added dummy test-page exports for badges and certificates.
+- Empty document selection is treated as validation, not an export failure.
+
 # MIFP Conference Editor
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -22,7 +84,7 @@ The hosted editor can open and edit a local workspace in a Chromium-based browse
 
 ### Conference content
 
-- Page-first visual editor for `conference.yaml`.
+- Page-first visual editor for public `conference.yaml` plus a dedicated Registration Form editor for `regform/settings.yaml`.
 - Raw YAML editor for advanced changes.
 - Important dates editor.
 - Local asset browser and replacement tools.
@@ -78,7 +140,9 @@ CONFERENCE-2027/
 │   └── venue/
 ├── css/
 ├── js/
-├── regform/          # optional PHP registration form
+├── regform/
+│   ├── settings.yaml # isolated form/mail/backend settings
+│   └── ...           # optional PHP registration module
 └── *.html
 ```
 
@@ -88,7 +152,8 @@ Conference instances are deliberately not committed to this repository. The defa
 
 The editor is intentionally file-based and does not maintain its own database.
 
-- `conference.yaml` is the main source of conference/site configuration.
+- `conference.yaml` is the source of public conference/site configuration.
+- `regform/settings.yaml` is the separate source of PHP form, email, upload and rate-limit settings.
 - `data/people.csv` stores people and roles.
 - `data/program.csv` stores the program.
 - conference assets remain ordinary local files.

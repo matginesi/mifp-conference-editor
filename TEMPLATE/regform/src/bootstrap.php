@@ -9,11 +9,27 @@ if (isset($_SERVER['SCRIPT_FILENAME']) && realpath((string)$_SERVER['SCRIPT_FILE
 
 const MIFP_REG_GUARD = '<?php http_response_code(404); exit; ?>';
 
+
+/**
+ * PHP 7.4 compatibility helpers for the small subset of PHP 8 string helpers
+ * used by the registration module. Namespaced with the project prefix so they
+ * remain harmless when the site later runs on PHP 8.x.
+ */
+function mifp_str_contains(string $haystack, string $needle): bool
+{
+    return $needle === '' || strpos($haystack, $needle) !== false;
+}
+
+function mifp_str_starts_with(string $haystack, string $needle): bool
+{
+    return $needle === '' || strncmp($haystack, $needle, strlen($needle)) === 0;
+}
+
 /**
  * Small dependency-free YAML reader matching the limited YAML subset used by
- * conference.yaml. If ext-yaml is installed, PHP uses it instead.
+ * the MIFP YAML settings files. If ext-yaml is installed, PHP uses it instead.
  */
-function yaml_scalar_value(string $raw): mixed
+function yaml_scalar_value(string $raw)
 {
     $value = trim($raw);
     if ($value === '') {
@@ -37,7 +53,7 @@ function yaml_scalar_value(string $raw): mixed
         return null;
     }
     if (preg_match('/^-?(?:\d+\.?\d*|\.\d+)$/', $value) === 1) {
-        return str_contains($value, '.') ? (float)$value : (int)$value;
+        return mifp_str_contains($value, '.') ? (float)$value : (int)$value;
     }
     return $value;
 }
@@ -82,7 +98,7 @@ function yaml_mapping_entry(string $text): ?array
 function yaml_tokenize(string $raw): array
 {
     if (strlen($raw) > 2_000_000) {
-        throw new RuntimeException('conference.yaml is unexpectedly large.');
+        throw new RuntimeException('YAML settings file is unexpectedly large.');
     }
 
     $tokens = [];
@@ -117,14 +133,14 @@ function yaml_read_multiline(array $tokens, int $position, int $parentIndent, bo
 function yaml_parse_block(array $tokens, int $position, int $indent, int $depth = 0): array
 {
     if ($depth > 40) {
-        throw new RuntimeException('conference.yaml nesting is too deep.');
+        throw new RuntimeException('YAML settings nesting is too deep.');
     }
     $count = count($tokens);
     if ($position >= $count) {
         return [[], $position];
     }
 
-    $isArray = $tokens[$position]['indent'] === $indent && str_starts_with($tokens[$position]['text'], '- ');
+    $isArray = $tokens[$position]['indent'] === $indent && mifp_str_starts_with($tokens[$position]['text'], '- ');
     $container = [];
 
     while ($position < $count) {
@@ -137,7 +153,7 @@ function yaml_parse_block(array $tokens, int $position, int $indent, int $depth 
         }
 
         if ($isArray) {
-            if (!str_starts_with($token['text'], '- ')) {
+            if (!mifp_str_starts_with($token['text'], '- ')) {
                 break;
             }
             $body = trim(substr($token['text'], 2));
@@ -178,7 +194,7 @@ function yaml_parse_block(array $tokens, int $position, int $indent, int $depth 
             while ($position < $count && $tokens[$position]['indent'] > $indent) {
                 $child = $tokens[$position];
                 $childIndent = $child['indent'];
-                if (str_starts_with($child['text'], '- ')) {
+                if (mifp_str_starts_with($child['text'], '- ')) {
                     break;
                 }
                 $childPair = yaml_mapping_entry($child['text']);
@@ -230,8 +246,9 @@ function yaml_parse_block(array $tokens, int $position, int $indent, int $depth 
 
 function parse_conference_yaml(string $file): array
 {
+    $label = basename($file);
     if (!is_file($file) || !is_readable($file)) {
-        throw new RuntimeException('conference.yaml is unavailable.');
+        throw new RuntimeException($label . ' is unavailable.');
     }
 
     if (function_exists('yaml_parse_file')) {
@@ -243,17 +260,17 @@ function parse_conference_yaml(string $file): array
 
     $raw = file_get_contents($file);
     if (!is_string($raw)) {
-        throw new RuntimeException('conference.yaml could not be read.');
+        throw new RuntimeException($label . ' could not be read.');
     }
     $tokens = yaml_tokenize($raw);
     if ($tokens === []) {
-        throw new RuntimeException('conference.yaml is empty.');
+        throw new RuntimeException($label . ' is empty.');
     }
     [$parsed] = yaml_parse_block($tokens, 0, $tokens[0]['indent']);
     return $parsed;
 }
 
-function yaml_path(array $config, array $path, mixed $default = null): mixed
+function yaml_path(array $config, array $path, $default = null)
 {
     $value = $config;
     foreach ($path as $key) {
@@ -304,7 +321,33 @@ function registration_field_options(array $config, string $fieldName): array
     return [];
 }
 
-function yaml_string_list(mixed $value): array
+function registration_field_config(array $config, string $fieldName): ?array
+{
+    $sections = yaml_path($config, ['registration', 'form', 'sections'], []);
+    if (!is_array($sections)) return null;
+    foreach ($sections as $section) {
+        if (!is_array($section) || !is_array($section['fields'] ?? null)) continue;
+        foreach ($section['fields'] as $field) {
+            if (is_array($field) && (string)($field['name'] ?? '') === $fieldName) return $field;
+        }
+    }
+    return null;
+}
+
+function form_field_definition(array $settings, string $fieldName): ?array
+{
+    $sections = $settings['form_sections'] ?? [];
+    if (!is_array($sections)) return null;
+    foreach ($sections as $section) {
+        if (!is_array($section) || !is_array($section['fields'] ?? null)) continue;
+        foreach ($section['fields'] as $field) {
+            if (is_array($field) && (string)($field['name'] ?? '') === $fieldName) return $field;
+        }
+    }
+    return null;
+}
+
+function yaml_string_list($value): array
 {
     if (!is_array($value)) {
         return is_scalar($value) && trim((string)$value) !== '' ? [(string)$value] : [];
@@ -318,36 +361,49 @@ function yaml_string_list(mixed $value): array
     return $result;
 }
 
-function load_settings(string $file): array
+function load_settings(string $conferenceFile, string $regformFile): array
 {
-    $config = parse_conference_yaml($file);
+    $config = parse_conference_yaml($conferenceFile);
+    $regformDocument = parse_conference_yaml($regformFile);
     $conference = yaml_path($config, ['conference'], []);
     $registration = yaml_path($config, ['registration'], []);
-    $form = yaml_path($config, ['registration', 'form'], []);
-    $backend = yaml_path($config, ['registration', 'form', 'backend'], []);
-    $mail = yaml_path($config, ['registration', 'form', 'mail'], []);
+    $form = yaml_path($regformDocument, ['regform'], []);
+    $backend = is_array($form) ? ($form['backend'] ?? []) : [];
+    $mail = is_array($form) ? ($form['mail'] ?? []) : [];
     $appearance = yaml_path($config, ['appearance'], []);
     $runtime = yaml_path($config, ['runtime'], []);
+    $assets = yaml_path($config, ['assets'], []);
 
-    if (!is_array($conference) || !is_array($registration) || !is_array($form) || !is_array($backend) || !is_array($mail) || !is_array($appearance) || !is_array($runtime)) {
-        throw new RuntimeException('Registration configuration in conference.yaml is invalid.');
+    if (!is_array($conference) || !is_array($registration) || !is_array($form) || !is_array($backend) || !is_array($mail) || !is_array($appearance) || !is_array($runtime) || !is_array($assets)) {
+        throw new RuntimeException('Registration configuration is invalid. Check conference.yaml and regform/settings.yaml.');
     }
 
-    $contactEmail = trim((string)($conference['email'] ?? ''));
+    // Merge only in memory so existing validation/helpers can work with one
+    // structure. regform/settings.yaml remains the sole source of form/backend/mail settings.
+    if (!isset($config['registration']) || !is_array($config['registration'])) {
+        $config['registration'] = [];
+    }
+    $config['registration']['form'] = $form;
+
+    $contactEmail = trim((string)($mail['reply_to_email'] ?? ($conference['email'] ?? '')));
     if ($contactEmail === '') {
-        throw new RuntimeException('conference.email must be configured.');
+        throw new RuntimeException('regform.mail.reply_to_email must be configured.');
     }
 
     $mailRequired = (bool)($registration['enabled'] ?? true)
         && (bool)($form['enabled'] ?? true)
         && (bool)($form['submit_enabled'] ?? false);
     if ($mailRequired && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
-        throw new RuntimeException('conference.email must be a valid email address while registration submissions are enabled.');
+        throw new RuntimeException('regform.mail.reply_to_email must be a valid email address while registration submissions are enabled.');
     }
 
     $fromEmail = trim((string)($mail['from_email'] ?? $contactEmail));
     if ($mailRequired && !filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) {
-        throw new RuntimeException('registration.form.mail.from_email must be a valid email address while registration submissions are enabled.');
+        throw new RuntimeException('regform.mail.from_email must be a valid email address while registration submissions are enabled.');
+    }
+
+    if ($mailRequired && registration_field_config($config, 'email') === null) {
+        throw new RuntimeException('An email field is required while registration submissions are enabled.');
     }
 
     $adminEmails = yaml_string_list($mail['admin_emails'] ?? []);
@@ -358,7 +414,7 @@ function load_settings(string $file): array
     if ($mailRequired) {
         foreach ($adminEmails as $adminEmail) {
             if (!filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
-                throw new RuntimeException('registration.form.mail.admin_emails contains an invalid email address.');
+                throw new RuntimeException('regform.mail.admin_emails contains an invalid email address.');
             }
         }
     }
@@ -407,6 +463,7 @@ function load_settings(string $file): array
             'required_note' => (string)($form['required_note'] ?? 'Fields marked with * are required.'),
             'submit_label' => (string)($form['submit_label'] ?? 'Submit registration'),
         ],
+        'form_sections' => is_array($form['sections'] ?? null) ? $form['sections'] : [],
         'categories' => $categories,
         'payment_methods' => registration_field_options($config, 'payment_method'),
         'tshirt_sizes' => registration_field_options($config, 'tshirt_size'),
@@ -433,6 +490,11 @@ function load_settings(string $file): array
             'themes' => is_array($appearance['themes'] ?? null) ? $appearance['themes'] : [],
             'palettes' => is_array($appearance['palettes'] ?? null) ? $appearance['palettes'] : [],
         ],
+        'branding' => [
+            'conference_logo' => (string)($assets['logo'] ?? ''),
+            'conference_logo_large' => (string)($assets['logo_large'] ?? ($assets['logo'] ?? '')),
+            'organizer_logo' => (string)($assets['organizer_logo'] ?? ''),
+        ],
         'runtime' => [
             'debug' => (bool)($runtime['debug'] ?? false),
             'log_level' => (string)($runtime['log_level'] ?? 'info'),
@@ -452,9 +514,15 @@ function load_settings(string $file): array
         ],
     ];
 
-    foreach (['categories', 'payment_methods', 'dietary_choices'] as $requiredList) {
-        if ($settings[$requiredList] === []) {
-            throw new RuntimeException('Missing registration options in conference.yaml: ' . $requiredList);
+    foreach ([
+        'registration_type' => 'categories',
+        'payment_method' => 'payment_methods',
+        'tshirt_size' => 'tshirt_sizes',
+        'dietary_choice' => 'dietary_choices',
+    ] as $fieldName => $listName) {
+        $field = registration_field_config($config, $fieldName);
+        if ($field !== null && strtolower((string)($field['type'] ?? '')) === 'select' && $settings[$listName] === []) {
+            throw new RuntimeException('Missing options for registration field: ' . $fieldName);
         }
     }
 
@@ -471,7 +539,7 @@ function text_length(string $value): int
     return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
 }
 
-function clean_text(mixed $value, int $maxLength, bool $multiline = false): string
+function clean_text($value, int $maxLength, bool $multiline = false): string
 {
     $text = is_string($value) ? trim($value) : '';
     $text = str_replace("\0", '', $text);
@@ -488,7 +556,7 @@ function clean_text(mixed $value, int $maxLength, bool $multiline = false): stri
     return $text;
 }
 
-function bool_setting(mixed $value, bool $default = false): bool
+function bool_setting($value, bool $default = false): bool
 {
     if (is_bool($value)) {
         return $value;
@@ -509,7 +577,7 @@ function resolve_storage_path(string $baseDir, string $configured): string
         throw new RuntimeException('Storage path is not configured.');
     }
 
-    $isAbsolute = str_starts_with($configured, '/') || preg_match('/^[A-Za-z]:[\\\\\/]/', $configured) === 1;
+    $isAbsolute = mifp_str_starts_with($configured, '/') || preg_match('/^[A-Za-z]:[\\\\\/]/', $configured) === 1;
     return $isAbsolute ? rtrim($configured, DIRECTORY_SEPARATOR) : $baseDir . DIRECTORY_SEPARATOR . trim($configured, '/\\');
 }
 
@@ -576,7 +644,7 @@ function csrf_token(): string
     return $_SESSION['csrf_token'];
 }
 
-function validate_csrf(mixed $token): bool
+function validate_csrf($token): bool
 {
     return is_string($token)
         && isset($_SESSION['csrf_token'])
@@ -694,7 +762,7 @@ function rate_limit_or_throw(string $storagePath, array $security): void
     }
 }
 
-function validate_date_value(mixed $value): ?string
+function validate_date_value($value): ?string
 {
     if (!is_string($value) || $value === '') {
         return null;
@@ -707,81 +775,80 @@ function validate_form(array $post, array $settings): array
 {
     $errors = [];
     $data = [];
+    $sections = is_array($settings['form_sections'] ?? null) ? $settings['form_sections'] : [];
 
-    $requiredText = [
-        'first_name' => ['First name', 100],
-        'last_name' => ['Last name', 100],
-        'affiliation' => ['Affiliation / Institution / Company', 180],
-        'country' => ['Country', 100],
-        'address' => ['Full address', 350],
-    ];
+    foreach ($sections as $section) {
+        if (!is_array($section) || !is_array($section['fields'] ?? null)) continue;
+        foreach ($section['fields'] as $field) {
+            if (!is_array($field)) continue;
+            $name = trim((string)($field['name'] ?? ''));
+            if ($name === '' || preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $name) !== 1) continue;
+            $label = trim((string)($field['label'] ?? $name));
+            $type = strtolower(trim((string)($field['type'] ?? 'text')));
+            $required = bool_setting($field['required'] ?? false, false);
 
-    foreach ($requiredText as $field => [$label, $max]) {
-        $value = clean_text($post[$field] ?? '', $max, $field === 'address');
-        if ($value === '') {
-            $errors[$field] = $label . ' is required.';
+            if ($type === 'file') continue;
+
+            if ($type === 'checkbox') {
+                $checked = (string)($post[$name] ?? '') === '1';
+                if ($required && !$checked) $errors[$name] = $label . ' is required.';
+                $data[$name] = $checked;
+                continue;
+            }
+
+            $raw = $post[$name] ?? '';
+            if ($type === 'date') {
+                $clean = clean_text($raw, 20);
+                if ($clean === '') {
+                    if ($required) $errors[$name] = $label . ' is required.';
+                    $data[$name] = '';
+                    continue;
+                }
+                $valid = validate_date_value($clean);
+                if ($valid === null) $errors[$name] = 'Enter a valid ' . strtolower($label) . '.';
+                $data[$name] = $valid ?? '';
+                continue;
+            }
+
+            if ($type === 'email') {
+                $value = clean_text($raw, 254);
+                if ($value === '') {
+                    if ($required) $errors[$name] = $label . ' is required.';
+                } elseif (!filter_var($value, FILTER_VALIDATE_EMAIL)) {
+                    $errors[$name] = 'Enter a valid email address.';
+                }
+                $data[$name] = $value;
+                continue;
+            }
+
+            if ($type === 'select') {
+                $value = clean_text($raw, 180);
+                $options = [];
+                foreach (($field['options'] ?? []) as $option) {
+                    $candidate = is_array($option) ? ($option['value'] ?? $option['label'] ?? '') : $option;
+                    if (is_scalar($candidate) && trim((string)$candidate) !== '') $options[] = (string)$candidate;
+                }
+                if ($value === '') {
+                    if ($required) $errors[$name] = $label . ' is required.';
+                } elseif (!in_array($value, $options, true)) {
+                    $errors[$name] = 'Choose a valid ' . strtolower($label) . '.';
+                }
+                $data[$name] = $value;
+                continue;
+            }
+
+            $maxDefault = $type === 'textarea' ? 1000 : 250;
+            $max = (int)($field['maxlength'] ?? $maxDefault);
+            $max = max(1, min($max, 4000));
+            $value = clean_text($raw, $max, $type === 'textarea');
+            if ($required && $value === '') $errors[$name] = $label . ' is required.';
+            $data[$name] = $value;
         }
-        $data[$field] = $value;
     }
 
-    $email = clean_text($post['email'] ?? '', 254);
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors['email'] = 'Enter a valid email address.';
-    }
-    $data['email'] = $email;
-
-    $arrival = validate_date_value($post['arrival_date'] ?? null);
-    $departure = validate_date_value($post['departure_date'] ?? null);
-    if ($arrival === null) {
-        $errors['arrival_date'] = 'Enter a valid arrival date.';
-    }
-    if ($departure === null) {
-        $errors['departure_date'] = 'Enter a valid departure date.';
-    }
-    if ($arrival !== null && $departure !== null && $departure < $arrival) {
+    if (($data['arrival_date'] ?? '') !== '' && ($data['departure_date'] ?? '') !== '' && $data['departure_date'] < $data['arrival_date']) {
         $errors['departure_date'] = 'Departure date cannot be before arrival date.';
     }
-    $data['arrival_date'] = $arrival ?? '';
-    $data['departure_date'] = $departure ?? '';
-
-    $categories = $settings['categories'];
-    $registrationType = clean_text($post['registration_type'] ?? '', 60);
-    if (!in_array($registrationType, array_values($categories), true)) {
-        $errors['registration_type'] = 'Choose a valid registration type.';
-    }
-    $data['registration_type'] = $registrationType;
-
-    $payments = $settings['payment_methods'];
-    $paymentMethod = clean_text($post['payment_method'] ?? '', 60);
-    if (!in_array($paymentMethod, array_values($payments), true)) {
-        $errors['payment_method'] = 'Choose a valid payment method.';
-    }
-    $data['payment_method'] = $paymentMethod;
-
-    $tshirtEnabled = bool_setting($settings['form']['tshirt_enabled'] ?? true, true);
-    $shirt = clean_text($post['tshirt_size'] ?? '', 16);
-    if ($tshirtEnabled) {
-        $sizes = $settings['tshirt_sizes'] ?? [];
-        if (!is_array($sizes) || !in_array($shirt, array_values($sizes), true)) {
-            $errors['tshirt_size'] = 'Choose a valid T-shirt size.';
-        }
-    } else {
-        $shirt = '';
-    }
-    $data['tshirt_size'] = $shirt;
-
-    $dietary = clean_text($post['dietary_choice'] ?? '', 80);
-    $choices = $settings['dietary_choices'];
-    if (!in_array($dietary, array_values($choices), true)) {
-        $errors['dietary_choice'] = 'Choose a valid dietary option.';
-    }
-    $data['dietary_choice'] = $dietary;
-    $data['dietary_notes'] = clean_text($post['dietary_notes'] ?? '', 500, true);
-
-    if (($post['privacy_acceptance'] ?? null) !== '1') {
-        $errors['privacy_acceptance'] = 'You must accept the privacy notice and registration conditions.';
-    }
-    $data['privacy_acceptance'] = empty($errors['privacy_acceptance']);
 
     return [$data, $errors];
 }
@@ -895,7 +962,7 @@ function store_proof_of_payment(string $storagePath, array $upload, string $rece
     return $stored;
 }
 
-function csv_safe_value(mixed $value): string
+function csv_safe_value($value): string
 {
     $text = is_bool($value) ? ($value ? 'true' : 'false') : (string)($value ?? '');
     $text = str_replace("\0", '', $text);

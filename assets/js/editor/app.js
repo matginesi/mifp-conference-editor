@@ -2,7 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[MIFP-EDITOR]';
-  const EDITOR_VERSION = '1.19.0';
+  const EDITOR_VERSION = '1.22.10';
   const supportsFsAccess = typeof window.showDirectoryPicker === 'function';
   const MAX_LOGS = 500;
   const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','avif']);
@@ -20,7 +20,11 @@
     memoryOverrides: new Map(),
     yamlText: '',
     config: null,
+    regformYamlText: '',
+    regformConfig: null,
+    regformDirty: false,
     people: { headers: [], rows: [], dirty: false, path: 'data/people.csv' },
+    peopleDemo: { active:false, snapshot:null },
     program: { headers: [], rows: [], dirty: false, path: 'data/program.csv' },
     yamlDirty: false,
     assets: [],
@@ -42,7 +46,9 @@
     sheetObservers: { people:null, program:null },
     totem: { resolve:null, mode:'confirm' },
     previewWindow: null,
-    previewUrls: []
+    previewUrls: [],
+    globalSearchSelection: -1,
+    globalSearchResults: []
   };
 
   const $ = (id) => document.getElementById(id);
@@ -54,6 +60,9 @@
     Object.assign(els, {
       saveState: $('saveState'),
       saveAllBtn: $('saveAllBtn'),
+      globalSearch: $('globalSearch'),
+      globalSearchInput: $('globalSearchInput'),
+      globalSearchResults: $('globalSearchResults'),
       exportZipBtn: $('exportZipBtn'),
       workspaceName: $('workspaceName'),
       projectName: $('projectName'),
@@ -89,6 +98,11 @@
       sectionYamlStatus: $('sectionYamlStatus'),
       applySectionYamlBtn: $('applySectionYamlBtn'),
       saveYamlFromSettingsBtn: $('saveYamlFromSettingsBtn'),
+      regformEmpty: $('regformEmpty'),
+      regformContent: $('regformContent'),
+      regformSectionHead: $('regformSectionHead'),
+      regformForm: $('regformForm'),
+      saveRegformBtn: $('saveRegformBtn'),
       assetsEmpty: $('assetsEmpty'),
       assetsContent: $('assetsContent'),
       refreshAssetsBtn: $('refreshAssetsBtn'),
@@ -153,6 +167,7 @@
     els.saveAllBtn.addEventListener('click', saveAll);
     els.exportZipBtn.addEventListener('click', exportProjectZip);
     els.saveYamlFromSettingsBtn.addEventListener('click', saveYaml);
+    if (els.saveRegformBtn) els.saveRegformBtn.addEventListener('click', saveRegformSettings);
     els.savePeopleBtn.addEventListener('click', () => saveSheet('people'));
     els.saveProgramBtn.addEventListener('click', () => saveSheet('program'));
     els.saveDatesBtn.addEventListener('click', saveImportantDates);
@@ -173,6 +188,11 @@
     els.openSiteBtn.addEventListener('click', () => openConferencePreview('index.html'));
     els.previewSiteBtn.addEventListener('click', () => openConferencePreview('index.html'));
     els.settingsSectionSearch.addEventListener('input', renderSettingsSectionNav);
+    if (els.globalSearchInput) {
+      els.globalSearchInput.addEventListener('input', renderGlobalSearchResults);
+      els.globalSearchInput.addEventListener('focus', renderGlobalSearchResults);
+      els.globalSearchInput.addEventListener('keydown', handleGlobalSearchKeydown);
+    }
     if (els.sectionYamlEditor) els.sectionYamlEditor.addEventListener('input', () => {
       state.sectionYamlDirty = true;
       setSectionYamlStatus('neutral', 'Section YAML modified · apply to synchronize');
@@ -194,12 +214,22 @@
     els.totemInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); confirmTotem(); } });
 
     document.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (els.globalSearchInput) { els.globalSearchInput.focus(); els.globalSearchInput.select(); renderGlobalSearchResults(); }
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
         if (state.config) saveAll();
       }
+      if (event.key === 'Escape' && els.globalSearchResults && !els.globalSearchResults.classList.contains('hidden')) { closeGlobalSearch(); return; }
       if (event.key === 'Escape' && !els.totemBackdrop.classList.contains('hidden')) { resolveTotem(null); return; }
       if (event.key === 'Escape' && !els.modalBackdrop.classList.contains('hidden')) closeModal();
+    });
+
+    document.addEventListener('pointerdown', (event) => {
+      if (els.globalSearch && !els.globalSearch.contains(event.target)) closeGlobalSearch();
     });
 
     window.addEventListener('beforeunload', (event) => {
@@ -218,6 +248,214 @@
     });
   }
 
+  function normalizeSearchText(value) {
+    return String(value == null ? '' : value).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[_./-]+/g,' ').replace(/\s+/g,' ').trim();
+  }
+
+  function preferredSettingsPageForSection(section) {
+    const direct = SETTINGS_PAGES.find((page)=>page.id === section && settingsPageAvailable(page));
+    if (direct) return direct;
+    const aliases = { social_program:'social', people:'speakers', committee:'speakers' };
+    if (aliases[section]) {
+      const aliased = SETTINGS_PAGES.find((page)=>page.id === aliases[section] && settingsPageAvailable(page));
+      if (aliased) return aliased;
+    }
+    const global = SETTINGS_PAGES.find((page)=>page.id === 'global' && settingsPageSections(page).includes(section));
+    if (global) return global;
+    return SETTINGS_PAGES.find((page)=>settingsPageSections(page).includes(section)) || null;
+  }
+
+  function globalSearchEntry(title, location, keywords, route, meta) {
+    const text = [title,location,keywords,meta].filter(Boolean).join(' ');
+    return { title:String(title||''), location:String(location||''), meta:String(meta||''), route, haystack:normalizeSearchText(text) };
+  }
+
+  function buildGlobalSearchIndex() {
+    const entries = [];
+    [
+      ['Overview','Overview','workspace files release version publish',{view:'overview'}],
+      ['Content Editor','Content Editor','conference yaml website pages sections settings',{view:'settings',page:'home'}],
+      ['Regform','Regform','registration form php email sender recipient reply to confirmation control organizer settings yaml',{view:'regform'},'regform/settings.yaml'],
+      ['Assets','Assets','images photos logos documents replace upload files gallery',{view:'assets'}],
+      ['Important Dates','Important Dates','dates deadline deadlines countdown submission registration',{view:'dates'}],
+      ['Content Check','Content Check','check warnings placeholders tbc tbd validation missing content',{view:'checks'}],
+      ['People','People','participants speakers committee roles import export excel csv',{view:'people'}],
+      ['Program','Program','schedule sessions talks program import export excel csv',{view:'program'}],
+      ['Badges & Certificates','Badges & Certificates','badge badges certificate certificates signatures logo stamp export pdf docx',{view:'documents'}],
+      ['Raw YAML','Raw YAML','conference yaml source advanced config',{view:'yaml'}],
+      ['Logs','Logs','log debug errors warnings console',{view:'logs'}]
+    ].forEach((item)=>entries.push(globalSearchEntry(item[0],item[1],item[2],item[3],item[4]||'')));
+
+    if (!state.config) return entries;
+
+    (state.people.rows || []).forEach((row,index)=>{
+      const first=String(row['First Name']||'').trim(), last=String(row['Last Name']||'').trim();
+      const title=(first+' '+last).trim() || ('Person '+(index+1));
+      const values=(state.people.headers||[]).map((header)=>String(row[header]||'')).join(' ');
+      entries.push(globalSearchEntry(title,'People',values+' participant speaker committee role affiliation country',{view:'people',kind:'people',row:index},'Row '+(index+1)));
+    });
+    (state.program.rows || []).forEach((row,index)=>{
+      const title=String(row.Title||row.title||row.Description||row.description||'').trim() || ('Program row '+(index+1));
+      const values=(state.program.headers||[]).map((header)=>String(row[header]||'')).join(' ');
+      entries.push(globalSearchEntry(title,'Program',values+' schedule session talk speaker chair location',{view:'program',kind:'program',row:index},'Row '+(index+1)));
+    });
+    (state.assets||[]).forEach((asset)=>entries.push(globalSearchEntry(asset.name||fileNameFromPath(asset.path),'Assets',asset.path+' '+extensionOf(asset.path)+' image file logo photo document',{view:'assets',assetPath:asset.path},asset.path)));
+    const dateItems=getConfig('important_dates.items',[]);
+    if(Array.isArray(dateItems)) dateItems.forEach((item,index)=>{
+      const label=String(item&&item.description||'Important date').trim()||'Important date';
+      entries.push(globalSearchEntry(label,'Important Dates',[item&&item.date,item&&item.description,item&&item.note,'deadline date countdown'].filter(Boolean).join(' '),{view:'dates',dateIndex:index},String(item&&item.date||'')));
+    });
+
+    const visitedSections = new Set();
+    Object.keys(state.config).forEach((section)=>{
+      if (section === 'registration' && state.config.registration && typeof state.config.registration === 'object') {
+        // The private form is indexed separately below.
+      }
+      const page = preferredSettingsPageForSection(section);
+      if (!page || page.virtual === 'regform') return;
+      visitedSections.add(section);
+      const sectionLabel = humanizeKey(section);
+      entries.push(globalSearchEntry(sectionLabel, page.label, section+' '+sectionLabel+' '+page.file, {view:'settings',page:page.id,section}, section));
+
+      const walk = (value,path) => {
+        if (section === 'registration' && path.length >= 2 && path[1] === 'form') return;
+        if (Array.isArray(value)) { value.forEach((item,index)=>walk(item,path.concat(index))); return; }
+        if (value && typeof value === 'object') { Object.keys(value).forEach((key)=>walk(value[key],path.concat(key))); return; }
+        const leaf = String(path[path.length-1] == null ? section : path[path.length-1]);
+        const pathText = displayConfigPath(path);
+        const valueText = typeof value === 'string' || typeof value === 'number' ? String(value) : (typeof value === 'boolean' ? (value ? 'enabled true on' : 'disabled false off') : '');
+        entries.push(globalSearchEntry(humanizeKey(leaf), page.label+' · '+sectionLabel, pathText+' '+valueText, {view:'settings',page:page.id,section,path:path.map(String)}, pathText));
+      };
+      walk(state.config[section],[section]);
+    });
+
+    if (state.regformConfig && typeof state.regformConfig === 'object') {
+      entries.push(globalSearchEntry('Form availability','Regform','enabled submit enabled open closed availability',{view:'regform',path:['registration','form','enabled']},'regform.enabled'));
+      const walkRegform = (value,path) => {
+        if (Array.isArray(value)) { value.forEach((item,index)=>walkRegform(item,path.concat(index))); return; }
+        if (value && typeof value === 'object') { Object.keys(value).forEach((key)=>walkRegform(value[key],path.concat(key))); return; }
+        const leaf=String(path[path.length-1]||'regform');
+        const valueText=typeof value === 'string' || typeof value === 'number' ? String(value) : (typeof value === 'boolean' ? (value?'enabled true on':'disabled false off') : '');
+        const displayPath='regform.'+path.slice(2).join('.');
+        entries.push(globalSearchEntry(humanizeKey(leaf),'Regform',displayPath+' '+valueText+' mail email sender reply recipient organizer confirmation backend upload rate limit storage',{view:'regform',path:path.map(String)},displayPath));
+      };
+      walkRegform(state.regformConfig,['registration','form']);
+    }
+    return entries;
+  }
+
+  function scoreGlobalSearchEntry(entry, query) {
+    const q=normalizeSearchText(query); if(!q) return 0;
+    const title=normalizeSearchText(entry.title), location=normalizeSearchText(entry.location), meta=normalizeSearchText(entry.meta);
+    const terms=q.split(' ').filter(Boolean);
+    if (!terms.every((term)=>entry.haystack.includes(term))) return -1;
+    let score=20;
+    if(title===q) score+=140; else if(title.startsWith(q)) score+=95; else if(title.includes(q)) score+=70;
+    if(location===q) score+=50; else if(location.includes(q)) score+=25;
+    if(meta===q) score+=45; else if(meta.includes(q)) score+=20;
+    score += terms.reduce((sum,term)=>sum+(title.startsWith(term)?12:title.includes(term)?6:0),0);
+    return score;
+  }
+
+  function renderGlobalSearchResults() {
+    if (!els.globalSearchInput || !els.globalSearchResults) return;
+    const query=String(els.globalSearchInput.value||'').trim();
+    if (!query) { closeGlobalSearch(false); return; }
+    const matches=buildGlobalSearchIndex().map((entry)=>({entry,score:scoreGlobalSearchEntry(entry,query)})).filter((item)=>item.score>=0).sort((a,b)=>b.score-a.score || a.entry.title.localeCompare(b.entry.title)).slice(0,14).map((item)=>item.entry);
+    state.globalSearchResults=matches; state.globalSearchSelection=matches.length?0:-1;
+    els.globalSearchResults.replaceChildren();
+    if (!matches.length) {
+      const empty=div('global-search-empty'); empty.textContent=state.config?'No matching page, section or setting.':'No match. Open a conference to search its settings.'; els.globalSearchResults.append(empty);
+    } else {
+      matches.forEach((entry,index)=>{
+        const row=button('','global-search-result'+(index===state.globalSearchSelection?' active':'')); row.type='button'; row.setAttribute('role','option'); row.setAttribute('aria-selected',index===state.globalSearchSelection?'true':'false');
+        const main=div('global-search-result-main'); const title=div('global-search-result-title',entry.title); const location=div('global-search-result-location',entry.location); main.append(title,location); row.append(main);
+        if(entry.meta) row.append(div('global-search-result-meta',entry.meta));
+        row.addEventListener('pointerenter',()=>{state.globalSearchSelection=index;updateGlobalSearchSelection();});
+        row.addEventListener('click',()=>openGlobalSearchResult(entry));
+        els.globalSearchResults.append(row);
+      });
+    }
+    els.globalSearchResults.classList.remove('hidden'); els.globalSearchInput.setAttribute('aria-expanded','true');
+  }
+
+  function updateGlobalSearchSelection() {
+    if (!els.globalSearchResults) return;
+    Array.from(els.globalSearchResults.querySelectorAll('.global-search-result')).forEach((row,index)=>{const active=index===state.globalSearchSelection;row.classList.toggle('active',active);row.setAttribute('aria-selected',active?'true':'false');if(active)row.scrollIntoView({block:'nearest'});});
+  }
+
+  function handleGlobalSearchKeydown(event) {
+    if (!state.globalSearchResults.length && (event.key==='ArrowDown'||event.key==='ArrowUp'||event.key==='Enter')) renderGlobalSearchResults();
+    if (event.key === 'ArrowDown') { event.preventDefault(); if(state.globalSearchResults.length){state.globalSearchSelection=(state.globalSearchSelection+1)%state.globalSearchResults.length;updateGlobalSearchSelection();} return; }
+    if (event.key === 'ArrowUp') { event.preventDefault(); if(state.globalSearchResults.length){state.globalSearchSelection=(state.globalSearchSelection-1+state.globalSearchResults.length)%state.globalSearchResults.length;updateGlobalSearchSelection();} return; }
+    if (event.key === 'Enter') { const entry=state.globalSearchResults[state.globalSearchSelection]; if(entry){event.preventDefault();openGlobalSearchResult(entry);} return; }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeGlobalSearch(); }
+  }
+
+  function closeGlobalSearch(blur) {
+    if (els.globalSearchResults) els.globalSearchResults.classList.add('hidden');
+    if (els.globalSearchInput) els.globalSearchInput.setAttribute('aria-expanded','false');
+    state.globalSearchSelection=-1; state.globalSearchResults=[];
+    if (blur !== false && els.globalSearchInput && document.activeElement===els.globalSearchInput) els.globalSearchInput.blur();
+  }
+
+  function elementForConfigPath(path) {
+    const key=(path||[]).map(String).join('.');
+    return Array.from(document.querySelectorAll('[data-config-path]')).find((node)=>node.dataset.configPath===key) || null;
+  }
+
+  function revealSearchTarget(node) {
+    if (!node) return false;
+    let parent=node.parentElement;
+    while(parent){ if(parent.tagName==='DETAILS') parent.open=true; parent=parent.parentElement; }
+    const focusable=node.matches('input,select,textarea,button')?node:node.querySelector('input,select,textarea,button');
+    pulseElement(node);
+    if(focusable) window.setTimeout(()=>{try{focusable.focus({preventScroll:true});}catch(_){focusable.focus();}},260);
+    return true;
+  }
+
+  function openGlobalSearchResult(entry) {
+    if (!entry || !entry.route) return;
+    const route=entry.route; closeGlobalSearch(); if(els.globalSearchInput) els.globalSearchInput.value='';
+    if (route.view !== 'settings') {
+      switchView(route.view);
+      if(route.view==='regform') {
+        renderRegformPage();
+        window.setTimeout(()=>{const target=route.path?elementForConfigPath(route.path):(document.getElementById('editor-section-regform-mail')||document.getElementById('editor-section-regform'));revealSearchTarget(target||els.regformContent);},50);
+        return;
+      }
+      if(route.view==='people'||route.view==='program') {
+        renderSpreadsheet(route.view);
+        window.setTimeout(()=>{
+          const host=route.view==='people'?els.peopleEditor:els.programEditor;
+          const target=Array.from(host.querySelectorAll('[data-kind][data-row]')).find((node)=>node.dataset.kind===route.view&&Number(node.dataset.row)===Number(route.row));
+          revealSearchTarget(target||host.querySelector('.sheet-scroll'));
+        },40);
+        return;
+      }
+      if(route.view==='assets'&&route.assetPath) {
+        els.assetSearch.value=route.assetPath; renderAssets();
+        window.setTimeout(()=>{const target=Array.from(els.assetGrid.querySelectorAll('[data-asset-path]')).find((node)=>node.dataset.assetPath===route.assetPath);revealSearchTarget(target||els.assetGrid);},40);
+        return;
+      }
+      if(route.view==='dates'&&Number.isInteger(route.dateIndex)) {
+        window.setTimeout(()=>{const target=Array.from(els.datesEditor.querySelectorAll('[data-date-index]')).find((node)=>Number(node.dataset.dateIndex)===route.dateIndex);revealSearchTarget(target||els.datesEditor);},40);
+        return;
+      }
+      window.setTimeout(()=>{const panel=document.querySelector('[data-view-panel="'+route.view+'"]'); if(panel)panel.scrollTop=0;},20); return;
+    }
+    if (!state.config) { switchView('settings'); return; }
+    if(route.page) state.activeSettingsPage=route.page;
+    if(route.section) state.activeSettingsSection=route.section;
+    switchView('settings'); renderSettings();
+    window.setTimeout(()=>{
+      let target=route.path?elementForConfigPath(route.path):null;
+      if(!target && route.section) target=document.getElementById('editor-section-'+route.section);
+      if(!target && route.page==='regform') target=document.getElementById('editor-section-regform-mail')||document.getElementById('editor-section-regform');
+      if(target) revealSearchTarget(target);
+    },50);
+  }
+
   function switchView(view) {
     state.activeView = view;
     document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
@@ -226,6 +464,7 @@
     if (view === 'dates' && state.config) renderImportantDates();
     if (view === 'checks' && state.config) renderContentChecks();
     if (view === 'documents' && state.config) renderDocuments();
+    if (view === 'regform' && state.config) renderRegformPage();
   }
 
   function log(level, event, details) {
@@ -518,15 +757,35 @@
     state.projectPrefix = project.prefix || '';
     state.projectHandle = project.handle || null;
     state.yamlDirty = false;
+    state.regformDirty = false;
     state.people.dirty = false;
+    state.peopleDemo.active = false;
+    state.peopleDemo.snapshot = null;
     state.program.dirty = false;
     state.sectionYamlDirty = false;
 
     try {
       const yamlText = await readProjectText('conference.yaml');
       const config = window.YamlLite.parse(yamlText);
-      state.yamlText = yamlText;
-      state.config = config;
+      const legacyForm = config && config.registration && typeof config.registration === 'object' ? config.registration.form : null;
+      if (config && config.registration && typeof config.registration === 'object' && Object.prototype.hasOwnProperty.call(config.registration, 'form')) delete config.registration.form;
+
+      let regformText = await readProjectText('regform/settings.yaml').catch(() => '');
+      let regformConfig = null;
+      if (regformText.trim()) {
+        const regformDocument = window.YamlLite.parse(regformText);
+        regformConfig = regformDocument && regformDocument.regform;
+        if (!regformConfig || typeof regformConfig !== 'object' || Array.isArray(regformConfig)) throw new Error('regform/settings.yaml must contain a top-level regform mapping.');
+      } else if (legacyForm && typeof legacyForm === 'object' && !Array.isArray(legacyForm)) {
+        regformConfig = legacyForm;
+        regformText = stringifyRegformSettings(regformConfig);
+        state.regformDirty = true;
+        state.yamlDirty = true;
+      }
+      state.regformConfig = regformConfig || Object.create(null);
+      state.regformYamlText = regformText.trim() ? regformText : stringifyRegformSettings(state.regformConfig);
+      state.yamlText = legacyForm ? window.YamlLite.stringify(config) : yamlText;
+      state.config = attachRegformConfig(config, state.regformConfig);
       state.people.path = getConfig('runtime.people_csv', 'data/people.csv');
       state.program.path = getConfig('runtime.program_csv', 'data/program.csv');
 
@@ -562,9 +821,11 @@
         programRows: state.program.rows.length,
         assets: state.assets.length,
         mode: state.mode,
-        version: state.version.version
+        version: state.version.version,
+        regformSettings: 'regform/settings.yaml'
       });
-      toast('Opened ' + state.projectName, 'success');
+      if (legacyForm) toast('Opened ' + state.projectName + ' · legacy registration.form migrated to regform/settings.yaml (save required).', 'success');
+      else toast('Opened ' + state.projectName, 'success');
     } catch (error) {
       state.config = null;
       log('error', 'project.load_failed', { project: project.name, message: error.message });
@@ -835,11 +1096,13 @@
     els.overviewContent.classList.toggle('hidden', !loaded);
     els.settingsEmpty.classList.toggle('hidden', loaded);
     els.settingsWorkbench.classList.toggle('hidden', !loaded);
+    if (els.regformEmpty) els.regformEmpty.classList.toggle('hidden', loaded);
+    if (els.regformContent) els.regformContent.classList.toggle('hidden', !loaded);
     els.assetsEmpty.classList.toggle('hidden', loaded);
     els.assetsContent.classList.toggle('hidden', !loaded);
     els.yamlEmpty.classList.toggle('hidden', loaded);
     els.yamlEditorWrap.classList.toggle('hidden', !loaded);
-    [els.saveAllBtn, els.exportZipBtn, els.previewSiteBtn, els.saveYamlFromSettingsBtn, els.refreshAssetsBtn, els.refreshChecksBtn, els.savePeopleBtn, els.saveProgramBtn, els.saveDatesBtn, els.validateYamlBtn, els.downloadYamlBtn, els.saveYamlBtn, els.bumpPatchBtn, els.bumpMinorBtn, els.bumpMajorBtn, els.saveVersionBtn].forEach((button) => { button.disabled = !loaded; });
+    [els.saveAllBtn, els.exportZipBtn, els.previewSiteBtn, els.saveYamlFromSettingsBtn, els.saveRegformBtn, els.refreshAssetsBtn, els.refreshChecksBtn, els.savePeopleBtn, els.saveProgramBtn, els.saveDatesBtn, els.validateYamlBtn, els.downloadYamlBtn, els.saveYamlBtn, els.bumpPatchBtn, els.bumpMinorBtn, els.bumpMajorBtn, els.saveVersionBtn].forEach((button) => { button.disabled = !loaded; });
     els.openSiteBtn.disabled = !loaded;
     els.previewSiteBtn.disabled = !loaded;
   }
@@ -852,6 +1115,42 @@
       current = current[part];
     }
     return current == null ? fallback : current;
+  }
+
+
+  function isRegformPath(path) {
+    return Array.isArray(path) && path[0] === 'registration' && path[1] === 'form';
+  }
+
+
+  function displayConfigPath(path) {
+    if (isRegformPath(path)) return ['regform'].concat(path.slice(2)).join('.');
+    return (path || []).join('.');
+  }
+
+  function attachRegformConfig(config, regformConfig) {
+    const target = config && typeof config === 'object' ? config : Object.create(null);
+    if (!target.registration || typeof target.registration !== 'object' || Array.isArray(target.registration)) target.registration = Object.create(null);
+    target.registration.form = regformConfig && typeof regformConfig === 'object' && !Array.isArray(regformConfig) ? regformConfig : Object.create(null);
+    return target;
+  }
+
+  function conferenceConfigForStorage(config) {
+    const copy = deepClone(config || state.config || Object.create(null));
+    if (copy.registration && typeof copy.registration === 'object' && !Array.isArray(copy.registration)) delete copy.registration.form;
+    return copy;
+  }
+
+  function conferenceSectionForStorage(section) {
+    const copy = deepClone(state.config && state.config[section]);
+    if (section === 'registration' && copy && typeof copy === 'object' && !Array.isArray(copy)) delete copy.form;
+    return copy;
+  }
+
+  function stringifyRegformSettings(config) {
+    const wrapper = Object.create(null);
+    wrapper.regform = deepClone(config || Object.create(null));
+    return window.YamlLite.stringify(wrapper);
   }
 
   async function readProjectText(path) {
@@ -926,6 +1225,7 @@
       if (state.sectionYamlDrafts && state.sectionYamlDrafts.size) { toast('Apply or reset the raw YAML drafts before saving.', 'error'); switchView('settings'); return; }
       if (state.sectionYamlDirty && !applySectionYamlFromEditor()) return;
       if (state.yamlDirty) await saveYaml();
+      if (state.regformDirty) { const ok = await saveRegformSettings(); if (!ok) return; }
       if (state.people.dirty) await saveSheet('people');
       if (state.program.dirty) await saveSheet('program');
       if (state.versionDirty) await saveVersionMetadata();
@@ -936,7 +1236,7 @@
     }
   }
 
-  function isDirty() { return Boolean(state.yamlDirty || state.people.dirty || state.program.dirty || state.versionDirty || state.sectionYamlDirty); }
+  function isDirty() { return Boolean(state.yamlDirty || state.regformDirty || state.people.dirty || state.program.dirty || state.versionDirty || state.sectionYamlDirty); }
 
   function updateSaveState() {
     const loaded = Boolean(state.config);
@@ -979,7 +1279,8 @@
     const files = [
       ['Project', state.projectName],
       ['Mode', state.mode === 'fs' ? 'Direct read/write' : 'Fallback import/export'],
-      ['Config', 'conference.yaml'],
+      ['Public config', 'conference.yaml'],
+      ['Regform settings', 'regform/settings.yaml'],
       ['People', state.people.path],
       ['Program', state.program.path],
       ['Registration data', 'regform/registrations/'],
@@ -1003,7 +1304,6 @@
     { id:'social', label:'Social Program', file:'social_program.html', sections:['social_program'] },
     { id:'travel', label:'Travel', file:'travel.html', sections:['travel'] },
     { id:'registration', label:'Registration', file:'registration.html', sections:['registration'] },
-    { id:'regform', label:'Registration Form', file:'regform/ · email delivery', sections:[], virtual:'regform' },
     { id:'privacy', label:'Privacy', file:'privacy.html', sections:['privacy'] },
     { id:'global', label:'Global site', file:'shared on every page', sections:['site','conference','labels','navigation','assets','appearance','layout','footer','seo','organization'] },
     { id:'technical', label:'Technical', file:'advanced', sections:['template','runtime','security'] }
@@ -1019,7 +1319,6 @@
 
   function settingsPageAvailable(page) {
     if (!state.config || !page) return false;
-    if (page.virtual === 'regform') return Boolean(getConfig('registration.form', null));
     return settingsPageSections(page).length > 0;
   }
 
@@ -1037,8 +1336,7 @@
     els.settingsSectionNav.replaceChildren();
     SETTINGS_PAGES.filter(settingsPageAvailable).filter((page)=>{
       if (!term) return true;
-      const virtualTerms = page.virtual === 'regform' ? 'registration form regform email mail sender recipient confirmation control organizer' : '';
-      return page.label.toLowerCase().includes(term) || page.file.toLowerCase().includes(term) || virtualTerms.includes(term) || settingsPageSections(page).some((key)=>humanizeKey(key).toLowerCase().includes(term)||key.toLowerCase().includes(term));
+      return page.label.toLowerCase().includes(term) || page.file.toLowerCase().includes(term) || settingsPageSections(page).some((key)=>humanizeKey(key).toLowerCase().includes(term)||key.toLowerCase().includes(term));
     }).forEach((page) => {
       const btn = button('', 'settings-section-button settings-page-button' + (page.id === state.activeSettingsPage ? ' active' : ''));
       const name=div('settings-page-button-name',page.label), meta=div('settings-page-button-meta',page.file);
@@ -1063,7 +1361,7 @@
     els.settingsSectionHead.replaceChildren();
     const page=SETTINGS_PAGES.find((item)=>item.id===state.activeSettingsPage);
     if (!page) return;
-    if (page.virtual === 'regform') { renderRegformSettingsPage(page); return; }
+    els.saveYamlFromSettingsBtn.textContent = 'Save conference.yaml';
     const titleWrap=div('settings-page-head-copy');
     const title=document.createElement('h2'); title.textContent=page.label;
     const note=document.createElement('p'); note.textContent='Edit the page section by section. Every visual editor is followed immediately by the raw YAML for that same section.';
@@ -1090,13 +1388,17 @@
     const visual=div('section-visual-editor');
     const experience=renderSettingsExperience(section,value); if(experience) visual.append(experience);
     let visualValue = value;
+    if (section === 'program' && value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value,'download')) {
+      visualValue = Object.create(null);
+      Object.keys(value).forEach((key)=>{ if (key !== 'download') visualValue[key] = value[key]; });
+    }
     if (section === 'registration' && value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value,'form')) {
       visualValue = Object.create(null);
       Object.keys(value).forEach((key)=>{ if (key !== 'form') visualValue[key] = value[key]; });
       const regformLink = div('regform-editor-callout');
-      const regformCopy = div(''); regformCopy.innerHTML = '<b>Registration form settings are separate</b><span>Open Registration Form to edit PHP form availability, email sender and control recipients.</span>';
-      const regformBtn = button('Open Registration Form','button ghost');
-      regformBtn.addEventListener('click',()=>{state.activeSettingsPage='regform';renderSettings();});
+      const regformCopy = div(''); regformCopy.innerHTML = '<b>Regform settings are separate</b><span>Use the dedicated Regform page in the sidebar to edit PHP form availability, email delivery and organizer recipients.</span>';
+      const regformBtn = button('Open Regform','button ghost');
+      regformBtn.addEventListener('click',()=>switchView('regform'));
       regformLink.append(regformCopy,regformBtn); visual.append(regformLink);
     }
     visual.append(renderYamlNode(visualValue,[section],section,0));
@@ -1105,39 +1407,42 @@
     return card;
   }
 
-  function renderRegformSettingsPage(page) {
+  function renderRegformPage() {
+    if (!state.config || !els.regformForm || !els.regformSectionHead) return;
     const form = getConfig('registration.form', null);
-    if (!form || typeof form !== 'object' || Array.isArray(form)) return;
+    els.regformForm.replaceChildren();
+    els.regformSectionHead.replaceChildren();
+    if (!form || typeof form !== 'object' || Array.isArray(form)) { els.regformForm.append(div('empty-state compact','regform/settings.yaml is missing or invalid')); return; }
 
     const titleWrap = div('settings-page-head-copy');
-    const title = document.createElement('h2'); title.textContent = page.label;
-    const note = document.createElement('p'); note.textContent = 'Configure the PHP registration form separately from the public registration page, including outgoing mail and organizer/control recipients.';
+    const title = document.createElement('h2'); title.textContent = 'Regform settings';
+    const note = document.createElement('p'); note.textContent = 'Private PHP registration settings. This page is independent from the public Registration content in conference.yaml.';
     titleWrap.append(title, note);
-    const code = document.createElement('code'); code.textContent = page.file;
-    els.settingsSectionHead.append(titleWrap, code);
+    const code = document.createElement('code'); code.textContent = 'regform/settings.yaml';
+    els.regformSectionHead.append(titleWrap, code);
 
     const availabilityCard = div('page-section-card regform-availability-card');
     const availabilityHead = div('page-section-head');
     const availabilityCopy = div('page-section-head-copy');
-    availabilityCopy.append(div('eyebrow','Availability'), Object.assign(document.createElement('h3'), { textContent:'Form availability' }), Object.assign(document.createElement('code'), { textContent:'registration.form.enabled / submit_enabled' }));
+    availabilityCopy.append(div('eyebrow','Availability'), Object.assign(document.createElement('h3'), { textContent:'Form availability' }), Object.assign(document.createElement('code'), { textContent:'regform.enabled / submit_enabled' }));
     availabilityHead.append(availabilityCopy, div('section-state '+((form.enabled !== false && form.submit_enabled !== false)?'on':'off'),(form.enabled !== false && form.submit_enabled !== false)?'Open':'Closed'));
     const availabilityVisual = div('section-visual-editor');
     const availabilityGrid = div('regform-availability-grid');
-    const moduleToggle = document.createElement('label'); moduleToggle.className='regform-confirm-toggle';
+    const moduleToggle = document.createElement('label'); moduleToggle.className='regform-confirm-toggle'; moduleToggle.dataset.configPath='registration.form.enabled';
     const moduleCheckbox = document.createElement('input'); moduleCheckbox.type='checkbox'; moduleCheckbox.checked=form.enabled !== false;
     const moduleText = document.createElement('span'); moduleText.innerHTML='<b>Registration form enabled</b><small>Controls whether the separate regform module is available.</small>';
-    moduleCheckbox.addEventListener('change',()=>{updateStructuredYaml(['registration','form','enabled'],moduleCheckbox.checked);renderSettingsSection();}); moduleToggle.append(moduleCheckbox,moduleText);
-    const submitToggle = document.createElement('label'); submitToggle.className='regform-confirm-toggle';
+    moduleCheckbox.addEventListener('change',()=>{updateStructuredYaml(['registration','form','enabled'],moduleCheckbox.checked);renderRegformPage();}); moduleToggle.append(moduleCheckbox,moduleText);
+    const submitToggle = document.createElement('label'); submitToggle.className='regform-confirm-toggle'; submitToggle.dataset.configPath='registration.form.submit_enabled';
     const submitCheckbox = document.createElement('input'); submitCheckbox.type='checkbox'; submitCheckbox.checked=form.submit_enabled !== false;
     const submitText = document.createElement('span'); submitText.innerHTML='<b>Accept submissions</b><small>Close this while keeping the form/configuration in place.</small>';
-    submitCheckbox.addEventListener('change',()=>{updateStructuredYaml(['registration','form','submit_enabled'],submitCheckbox.checked);renderSettingsSection();}); submitToggle.append(submitCheckbox,submitText);
+    submitCheckbox.addEventListener('change',()=>{updateStructuredYaml(['registration','form','submit_enabled'],submitCheckbox.checked);renderRegformPage();}); submitToggle.append(submitCheckbox,submitText);
     availabilityGrid.append(moduleToggle,submitToggle); availabilityVisual.append(availabilityGrid); availabilityCard.append(availabilityHead,availabilityVisual);
 
     const mailCard = div('page-section-card regform-mail-card');
     mailCard.id = 'editor-section-regform-mail';
     const mailHead = div('page-section-head');
     const mailCopy = div('page-section-head-copy');
-    mailCopy.append(div('eyebrow','Delivery'), Object.assign(document.createElement('h3'), { textContent:'Email delivery' }), Object.assign(document.createElement('code'), { textContent:'registration.form.mail' }));
+    mailCopy.append(div('eyebrow','Delivery'), Object.assign(document.createElement('h3'), { textContent:'Email delivery' }), Object.assign(document.createElement('code'), { textContent:'regform.mail' }));
     mailHead.append(mailCopy, div('section-state on','Configured'));
     const mailVisual = div('section-visual-editor');
     mailVisual.append(renderRegformMailControls());
@@ -1147,7 +1452,7 @@
     formCard.id = 'editor-section-regform';
     const formHead = div('page-section-head');
     const formCopy = div('page-section-head-copy');
-    formCopy.append(div('eyebrow','Form'), Object.assign(document.createElement('h3'), { textContent:'Registration form' }), Object.assign(document.createElement('code'), { textContent:'registration.form' }));
+    formCopy.append(div('eyebrow','Form'), Object.assign(document.createElement('h3'), { textContent:'Registration form' }), Object.assign(document.createElement('code'), { textContent:'regform/settings.yaml' }));
     const formEnabled = form.enabled !== false && form.submit_enabled !== false;
     formHead.append(formCopy, div('section-state '+(formEnabled?'on':'off'),formEnabled?'Enabled':'Disabled'));
     const formVisual = div('section-visual-editor');
@@ -1156,11 +1461,11 @@
     formVisual.append(renderYamlNode(formWithoutMail, ['registration','form'], 'form', 0));
     formCard.append(formHead, formVisual);
 
-    els.settingsForm.append(availabilityCard, mailCard, formCard);
+    els.regformForm.append(availabilityCard, mailCard, formCard);
   }
 
   function regformBoundField(labelText, path, helpText, type) {
-    const label = document.createElement('label'); label.className = 'regform-mail-field';
+    const label = document.createElement('label'); label.className = 'regform-mail-field'; label.dataset.configPath = path.map(String).join('.');
     const caption = document.createElement('span'); caption.textContent = labelText;
     const input = document.createElement('input'); input.type = type || 'text'; input.value = String(getAtPath(state.config, path) || '');
     const help = document.createElement('small'); help.textContent = helpText || path.join('.');
@@ -1192,12 +1497,12 @@
     grid.append(
       regformBoundField('Sender email', ['registration','form','mail','from_email'], 'Address used in the From header. It must be accepted by the server/PHP mail configuration.', 'email'),
       regformBoundField('Sender name', ['registration','form','mail','from_name'], 'Display name shown to recipients.', 'text'),
-      regformBoundField('Reply-to / conference contact', ['conference','email'], 'Replies to participant confirmations are directed here.', 'email'),
+      regformBoundField('Reply-to / conference contact', ['registration','form','mail','reply_to_email'], 'Reply-To address used by the registration module. This is separate from conference.email.', 'email'),
       regformBoundField('Subject prefix', ['registration','form','mail','subject_prefix'], 'Prefix used for registration email subjects.', 'text')
     );
     shell.append(grid);
 
-    const toggle = document.createElement('label'); toggle.className = 'regform-confirm-toggle';
+    const toggle = document.createElement('label'); toggle.className = 'regform-confirm-toggle'; toggle.dataset.configPath='registration.form.mail.send_user_confirmation';
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = mail.send_user_confirmation !== false;
     const toggleText = document.createElement('span'); toggleText.innerHTML = '<b>Send confirmation to requester</b><small>Uses the email address entered in the registration form.</small>';
     checkbox.addEventListener('change', () => updateStructuredYaml(['registration','form','mail','send_user_confirmation'], checkbox.checked));
@@ -1216,24 +1521,24 @@
       const items = Array.isArray(values) ? values : (values ? [String(values)] : []);
       if (!Array.isArray(getConfig('registration.form.mail.admin_emails', []))) {
         setAtPath(state.config, ['registration','form','mail','admin_emails'], items);
-        syncStructuredYaml('regform.recipients_normalized', { count:items.length });
+        syncRegformSettings('regform.recipients_normalized', { count:items.length });
       }
       if (!items.length) list.append(div('regform-recipient-empty','Add at least one control recipient.'));
       items.forEach((value, index) => {
-        const row = div('regform-recipient-row');
+        const row = div('regform-recipient-row'); row.dataset.configPath='registration.form.mail.admin_emails.'+index;
         const input = document.createElement('input'); input.type='email'; input.value=String(value||''); input.placeholder='name@example.org';
         updateEmailInputValidity(input);
         input.addEventListener('input', () => {
           const current = getAtPath(state.config, ['registration','form','mail','admin_emails']);
           current[index] = input.value;
           updateEmailInputValidity(input);
-          syncStructuredYaml('regform.recipient_changed', { index });
+          syncRegformSettings('regform.recipient_changed', { index });
         });
         const remove = button('Remove','button ghost danger');
         remove.addEventListener('click', () => {
           const current = getAtPath(state.config, ['registration','form','mail','admin_emails']);
           current.splice(index,1);
-          syncStructuredYaml('regform.recipient_removed',{index});
+          syncRegformSettings('regform.recipient_removed',{index});
           renderRecipients();
         });
         row.append(input, remove); list.append(row);
@@ -1245,7 +1550,7 @@
       if (!Array.isArray(current)) current = current ? [String(current)] : [];
       current.push('');
       setAtPath(state.config, ['registration','form','mail','admin_emails'], current);
-      syncStructuredYaml('regform.recipient_added',{count:current.length});
+      syncRegformSettings('regform.recipient_added',{count:current.length});
       renderRecipients();
       const inputs = list.querySelectorAll('input[type=email]'); if (inputs.length) inputs[inputs.length-1].focus();
     });
@@ -1272,8 +1577,8 @@
     const emailOk = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
     const sender = getConfig('registration.form.mail.from_email','');
     if (!emailOk(sender)) return 'Set a valid sender email for the registration form.';
-    const contact = getConfig('conference.email','');
-    if (!emailOk(contact)) return 'Set a valid conference contact / reply-to email.';
+    const contact = getConfig('registration.form.mail.reply_to_email','');
+    if (!emailOk(contact)) return 'Set a valid regform reply-to email.';
     const rawRecipients = getConfig('registration.form.mail.admin_emails',[]);
     const recipients = Array.isArray(rawRecipients) ? rawRecipients : [rawRecipients];
     const cleaned = recipients.map((item)=>String(item||'').trim()).filter(Boolean);
@@ -1292,10 +1597,10 @@
     actions.append(reset,apply); head.append(copy,actions); panel.append(head);
     const status=div('validation-bar neutral','Synchronized with visual fields'); panel.append(status);
     const textarea=document.createElement('textarea'); textarea.className='section-yaml-editor'; textarea.spellcheck=false; textarea.dataset.section=section; textarea.setAttribute('aria-label','Raw YAML for '+section);
-    const wrapper=Object.create(null); wrapper[section]=deepClone(state.config[section]);
+    const wrapper=Object.create(null); wrapper[section]=conferenceSectionForStorage(section);
     textarea.value=state.sectionYamlDrafts.get(section)||window.YamlLite.stringify(wrapper);
     textarea.addEventListener('input',()=>{state.sectionYamlDrafts.set(section,textarea.value);status.className='validation-bar neutral';status.textContent='Raw YAML modified · apply to synchronize';updateSaveState();});
-    reset.addEventListener('click',()=>{const w=Object.create(null);w[section]=deepClone(state.config[section]);textarea.value=window.YamlLite.stringify(w);state.sectionYamlDrafts.delete(section);status.className='validation-bar valid';status.textContent='Draft reset';updateSaveState();});
+    reset.addEventListener('click',()=>{const w=Object.create(null);w[section]=conferenceSectionForStorage(section);textarea.value=window.YamlLite.stringify(w);state.sectionYamlDrafts.delete(section);status.className='validation-bar valid';status.textContent='Draft reset';updateSaveState();});
     apply.addEventListener('click',()=>applyInlineSectionYaml(section,textarea,status));
     panel.append(textarea); return panel;
   }
@@ -1305,7 +1610,7 @@
       const parsed=window.YamlLite.parse(textarea.value||'');
       if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)) throw new Error('Section YAML must be a mapping');
       if(!Object.prototype.hasOwnProperty.call(parsed,section)) throw new Error('Expected top-level key "'+section+'"');
-      state.config[section]=parsed[section]; state.sectionYamlDrafts.delete(section); state.sectionYamlDirty=false;
+      state.config[section]=parsed[section]; if(section==='registration') attachRegformConfig(state.config, state.regformConfig); state.sectionYamlDrafts.delete(section); state.sectionYamlDirty=false;
       syncStructuredYaml('setting.section_yaml_applied',{section});
       status.className='validation-bar valid';status.textContent='Applied and synchronized';
       toast('Applied YAML section: '+section,'success');
@@ -1327,7 +1632,101 @@
     return select;
   }
 
+  function renderProgramDownloadSettings() {
+    const cfg = ensureProgramDownloadConfig();
+    const shell = div('program-download-editor');
+    shell.dataset.configPath = 'program.download';
+
+    const head = div('program-download-editor-head');
+    const copy = div('program-download-editor-copy');
+    copy.innerHTML = '<div class="eyebrow">Program download</div><h4>Public PDF download</h4><p>Configure the download button shown on the Program page. Enable/disable is independent from the PDF source.</p>';
+    const enabledLabel = document.createElement('label');
+    enabledLabel.className = 'program-download-toggle';
+    enabledLabel.dataset.configPath = 'program.download.enabled';
+    const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = cfg.enabled !== false;
+    const enabledText = document.createElement('span'); enabledText.innerHTML = '<b>Enabled</b><small>Show the download button</small>';
+    enabledLabel.append(enabled, enabledText);
+    head.append(copy, enabledLabel); shell.append(head);
+
+    const grid = div('program-download-grid');
+
+    const modeField = document.createElement('label'); modeField.className='program-download-field'; modeField.dataset.configPath='program.download.mode';
+    const modeCaption = document.createElement('span'); modeCaption.textContent='Mode';
+    const mode = document.createElement('select');
+    [
+      ['generated','Generate from program.csv'],
+      ['local','Use local PDF']
+    ].forEach(([value,label])=>{const option=document.createElement('option');option.value=value;option.textContent=label;mode.append(option);});
+    mode.value = String(cfg.mode || 'generated').toLowerCase() === 'local' ? 'local' : 'generated';
+    modeField.append(modeCaption, mode, Object.assign(document.createElement('small'),{textContent:'Choose how the public PDF is produced.'}));
+
+    const labelField = document.createElement('label'); labelField.className='program-download-field'; labelField.dataset.configPath='program.download.label';
+    const labelCaption = document.createElement('span'); labelCaption.textContent='Button label';
+    const labelInput = document.createElement('input'); labelInput.type='text'; labelInput.value=cfg.label || 'Download program PDF';
+    labelField.append(labelCaption,labelInput,Object.assign(document.createElement('small'),{textContent:'Text shown on the Program page.'}));
+
+    grid.append(modeField,labelField); shell.append(grid);
+
+    const generated = div('program-download-mode-panel'); generated.dataset.mode='generated';
+    const generatedField = document.createElement('label'); generatedField.className='program-download-field'; generatedField.dataset.configPath='program.download.generated_filename';
+    const generatedCaption = document.createElement('span'); generatedCaption.textContent='Generated filename';
+    const generatedInput = document.createElement('input'); generatedInput.type='text'; generatedInput.value=cfg.generated_filename || ((state.projectName||'conference')+'-program.pdf');
+    generatedField.append(generatedCaption,generatedInput,Object.assign(document.createElement('small'),{textContent:'Filename offered when the PDF is generated from program.csv.'}));
+    const generatedNote = div('program-download-mode-note'); generatedNote.innerHTML='<b>Generated PDF</b><span>The website builds the document from <code>'+escapeHtml(state.program.path||'program.csv')+'</code> using the Program PDF settings below.</span>';
+    generated.append(generatedNote,generatedField);
+
+    const local = div('program-download-mode-panel'); local.dataset.mode='local';
+    const localGrid = div('program-download-local-grid');
+    const fileField = document.createElement('label'); fileField.className='program-download-field program-download-file-field'; fileField.dataset.configPath='program.download.local_file';
+    const fileCaption = document.createElement('span'); fileCaption.textContent='Local PDF';
+    const fileSelect = document.createElement('select');
+    const pdfs = programPdfAssets();
+    const current = String(cfg.local_file || '');
+    const empty = document.createElement('option'); empty.value=''; empty.textContent='Choose a PDF…'; fileSelect.append(empty);
+    pdfs.forEach((asset)=>{const option=document.createElement('option');option.value=asset.path;option.textContent=asset.path;fileSelect.append(option);});
+    if(current && !pdfs.some((asset)=>asset.path===current)){const option=document.createElement('option');option.value=current;option.textContent=current+' (configured)';fileSelect.append(option);}
+    fileSelect.value=current;
+    fileField.append(fileCaption,fileSelect,Object.assign(document.createElement('small'),{textContent:'PDF stored in assets/documents/.'}));
+
+    const localNameField = document.createElement('label'); localNameField.className='program-download-field'; localNameField.dataset.configPath='program.download.local_filename';
+    const localNameCaption = document.createElement('span'); localNameCaption.textContent='Download filename';
+    const localNameInput = document.createElement('input'); localNameInput.type='text'; localNameInput.value=cfg.local_filename || fileNameFromPath(current) || ((state.projectName||'conference')+'-program.pdf');
+    localNameField.append(localNameCaption,localNameInput,Object.assign(document.createElement('small'),{textContent:'Filename offered to visitors for the local PDF.'}));
+    localGrid.append(fileField,localNameField); local.append(localGrid);
+    const localActions=div('inline-actions program-download-actions');
+    const upload=button(current ? 'Replace / upload PDF' : 'Upload PDF','button ghost');
+    const assets=button('Open Assets','button ghost');
+    const localStatus=div('program-download-status', current ? 'Selected: '+current : 'No local PDF selected.');
+    localActions.append(upload,assets,localStatus);local.append(localActions);
+
+    shell.append(generated,local);
+
+    function refreshMode(){
+      const isLocal=mode.value==='local';
+      generated.hidden=isLocal;
+      local.hidden=!isLocal;
+      shell.classList.toggle('is-disabled',!enabled.checked);
+    }
+    enabled.addEventListener('change',()=>{cfg.enabled=enabled.checked;syncStructuredYaml('program.download_enabled_changed',{enabled:cfg.enabled});refreshMode();});
+    mode.addEventListener('change',()=>{cfg.mode=mode.value;syncStructuredYaml('program.download_mode_changed',{mode:cfg.mode});refreshMode();});
+    labelInput.addEventListener('input',()=>{cfg.label=labelInput.value;syncStructuredYaml('program.download_label_changed',{});});
+    generatedInput.addEventListener('input',()=>{cfg.generated_filename=generatedInput.value;syncStructuredYaml('program.download_filename_changed',{mode:'generated'});});
+    localNameInput.addEventListener('input',()=>{cfg.local_filename=localNameInput.value;syncStructuredYaml('program.download_filename_changed',{mode:'local'});});
+    fileSelect.addEventListener('change',()=>{
+      cfg.local_file=fileSelect.value;
+      if(fileSelect.value && (!cfg.local_filename || cfg.local_filename==='program.pdf')){cfg.local_filename=fileNameFromPath(fileSelect.value);localNameInput.value=cfg.local_filename;}
+      syncStructuredYaml('program.download_local_changed',{path:fileSelect.value});
+      localStatus.textContent=fileSelect.value?'Selected: '+fileSelect.value:'No local PDF selected.';
+      upload.textContent=fileSelect.value?'Replace / upload PDF':'Upload PDF';
+    });
+    upload.addEventListener('click',()=>chooseAndUploadProgramPdf(()=>renderSettingsSection()));
+    assets.addEventListener('click',()=>switchView('assets'));
+    refreshMode();
+    return shell;
+  }
+
   function renderSettingsExperience(section) {
+    if (section === 'program') return renderProgramDownloadSettings();
     if (section !== 'appearance' || !state.config.appearance) return null;
     const cfg=state.config.appearance, themes=Array.isArray(cfg.themes)?cfg.themes:[], palettes=Array.isArray(cfg.palettes)?cfg.palettes:[];
     const shell=div('settings-experience');
@@ -1347,7 +1746,7 @@
   function renderSectionYamlEditor() {
     if (!state.config || !state.activeSettingsSection || !els.sectionYamlEditor) return;
     const wrapper = Object.create(null);
-    wrapper[state.activeSettingsSection] = deepClone(state.config[state.activeSettingsSection]);
+    wrapper[state.activeSettingsSection] = conferenceSectionForStorage(state.activeSettingsSection);
     els.sectionYamlEditor.value = window.YamlLite.stringify(wrapper);
     state.sectionYamlDirty = false;
     setSectionYamlStatus('valid', 'Section YAML synchronized');
@@ -1368,6 +1767,7 @@
         throw new Error('Expected top-level key "' + state.activeSettingsSection + '"');
       }
       state.config[state.activeSettingsSection] = parsed[state.activeSettingsSection];
+      if (state.activeSettingsSection === 'registration') attachRegformConfig(state.config, state.regformConfig);
       state.sectionYamlDirty = false;
       syncStructuredYaml('setting.section_yaml_applied', { section: state.activeSettingsSection });
       renderSettingsSection();
@@ -1386,7 +1786,7 @@
   function renderYamlNode(value, path, label, depth) {
     if (Array.isArray(value)) return renderYamlArray(value, path, label, depth);
     if (value && typeof value === 'object') {
-      const details = document.createElement('details'); details.className = 'yaml-node'; details.open = depth < 2 && !['themes','palettes','images','items'].includes(String(label||'').toLowerCase());
+      const details = document.createElement('details'); details.className = 'yaml-node'; details.dataset.configPath = (path || []).map(String).join('.'); details.open = depth < 2 && !['themes','palettes','images','items'].includes(String(label||'').toLowerCase());
       const summary = document.createElement('summary');
       const left = document.createElement('span'); left.textContent = depth === 0 ? humanizeKey(label) : humanizeKey(label);
       const right = document.createElement('small'); right.textContent = Object.keys(value).length + ' fields';
@@ -1407,9 +1807,10 @@
     const isLong = typeof value === 'string' && (value.length > 90 || value.includes('\n'));
     const isAsset = typeof value === 'string' && isAssetReferenceField(path, label, value);
     const wrap = div('yaml-field' + (isLong ? ' long' : '') + (isAsset ? ' asset-aware' : ''));
+    wrap.dataset.configPath = path.map(String).join('.');
     const lab = document.createElement('label');
     lab.textContent = humanizeKey(label);
-    const hint = document.createElement('small'); hint.textContent = path.join('.'); lab.append(hint);
+    const hint = document.createElement('small'); hint.textContent = displayConfigPath(path); lab.append(hint);
     let control;
     const selectOptions=yamlSelectOptions(path,label,value);
     if (typeof value === 'boolean') {
@@ -1435,17 +1836,23 @@
     const renderedControl=control._yamlWrapper||control;
     if (!isAsset) { wrap.append(renderedControl); return wrap; }
 
+    const currentValue = String(value || '');
+    if (isImageAssetReferenceField(path, label, currentValue)) {
+      wrap.classList.add('image-aware');
+      wrap.append(renderYamlImageEditor(path, label, currentValue, control));
+      return wrap;
+    }
+
     const assetBox = div('yaml-asset-field');
     assetBox.append(renderedControl);
     const chooserRow = div('yaml-asset-row');
     const select = document.createElement('select');
-    const currentValue = String(value || '');
     const manual = document.createElement('option');
     manual.value = ''; manual.textContent = currentValue ? 'Choose another asset…' : 'Choose an asset…';
     select.append(manual);
     const relevant = assetsForYamlField(path, label, currentValue);
     relevant.forEach((asset) => { const option=document.createElement('option');option.value=asset.path;option.textContent=asset.path;select.append(option); });
-    select.addEventListener('change', () => { if (!select.value) return; control.value=select.value;updateStructuredYaml(path,select.value);renderSettingsSection(); });
+    select.addEventListener('change', () => { if (!select.value) return; control.value=select.value;updateStructuredYaml(path,select.value);refreshYamlMutationView(path); });
     const upload = button(currentValue && state.assets.some((asset) => asset.path === currentValue) ? 'Replace / upload' : 'Upload asset', 'button ghost');
     upload.addEventListener('click', () => uploadAssetForYamlField(path, label, currentValue));
     chooserRow.append(select, upload); assetBox.append(chooserRow);
@@ -1458,6 +1865,140 @@
     if (String(value || '').startsWith('assets/')) return true;
     if (/(logo|image|photo|picture|thumbnail|banner|background|favicon|icon|poster|asset|document|brochure|pdf|file|attachment|download|map_image|hero_image|src)$/.test(key)) return true;
     return /(assets|gallery|branding|venue|accommodation|sponsors|social).*(logo|image|photo|src|file|document|pdf)/.test(joined);
+  }
+
+  function isImageAssetReferenceField(path, label, value) {
+    const key = String(label || '').toLowerCase();
+    const joined = path.map((part) => String(part).toLowerCase()).join('.');
+    const ext = extensionOf(value);
+    if (IMAGE_EXTENSIONS.has(ext)) return true;
+    if (/(logo|image|photo|picture|thumbnail|banner|background|favicon|icon|poster|map_image|hero_image|src)$/.test(key)) return true;
+    return /(assets|gallery|branding|venue|accommodation|sponsors|social|school|hero).*(logo|image|photo|picture|src)/.test(joined);
+  }
+
+  function setYamlAssetValue(path, value, reason) {
+    updateStructuredYaml(path, value || '');
+    log('debug', reason || 'setting.asset_selected', { path: displayConfigPath(path), asset: value || '' });
+    refreshYamlMutationView(path);
+  }
+
+  function renderYamlImageEditor(path, label, currentValue, pathControl) {
+    const editor = div('yaml-image-editor' + (currentValue ? ' has-image' : ' empty'));
+    const current = div('yaml-image-current');
+    const visual = div('yaml-image-visual');
+    const asset = state.assets.find((item) => item.path === currentValue);
+    const externalUrl = /^https?:\/\//i.test(currentValue) ? currentValue : '';
+    const previewUrl = asset ? assetPreviewUrl(currentValue) : externalUrl;
+    if (currentValue && previewUrl) {
+      const img = document.createElement('img');
+      img.src = previewUrl;
+      img.alt = humanizeKey(label) + ' preview';
+      img.loading = 'lazy';
+      img.addEventListener('click', () => openYamlImagePreview(currentValue, label));
+      visual.append(img);
+    } else {
+      const empty = div('yaml-image-empty');
+      if (currentValue) empty.innerHTML = '<b>Image not found</b><span>The configured path is not currently available in project Assets.</span>';
+      else empty.innerHTML = '<b>No image selected</b><span>Choose an existing project image or upload a new one.</span>';
+      visual.append(empty);
+    }
+    const info = div('yaml-image-info');
+    const title = div('yaml-image-title', currentValue ? fileNameFromPath(currentValue) : 'No image');
+    const pathText = div('yaml-image-path', currentValue || '—');
+    const status = div('yaml-image-status', currentValue ? (asset ? 'Project asset' : 'Configured path · file not currently loaded') : 'Optional / empty');
+    info.append(title, pathText, status);
+    current.append(visual, info);
+
+    const actions = div('yaml-image-actions');
+    const choose = button(currentValue ? 'Change image' : 'Choose image', 'button primary');
+    const upload = button(currentValue && asset ? 'Replace image' : 'Upload image', 'button');
+    const view = button('View', 'button ghost');
+    const clear = button('Remove', 'button ghost danger');
+    view.disabled = !currentValue;
+    clear.disabled = !currentValue;
+    choose.addEventListener('click', () => openYamlAssetPicker(path, label));
+    upload.addEventListener('click', () => uploadAssetForYamlField(path, label, String(getAtPath(state.config, path) || '')));
+    view.addEventListener('click', () => openYamlImagePreview(String(getAtPath(state.config, path) || ''), label));
+    clear.addEventListener('click', async () => {
+      if (!String(getAtPath(state.config, path) || '')) return;
+      const ok = await totemConfirm('Remove image', 'Remove this image from the section? The asset file itself will stay in Assets.', 'Remove', { danger:true });
+      if (!ok) return;
+      setYamlAssetValue(path, '', 'setting.image_cleared');
+    });
+    actions.append(choose, upload, view, clear);
+
+    const advanced = document.createElement('details');
+    advanced.className = 'yaml-image-advanced';
+    const summary = document.createElement('summary'); summary.textContent = 'Advanced · asset path';
+    const holder = div('yaml-image-path-editor');
+    pathControl.value = currentValue;
+    pathControl.addEventListener('change', () => refreshYamlMutationView(path));
+    holder.append(pathControl); advanced.append(summary, holder);
+
+    editor.append(current, actions, advanced);
+    return editor;
+  }
+
+  function openYamlImagePreview(path, label) {
+    if (!path) return;
+    els.modalTitle.textContent = 'Image preview · ' + humanizeKey(label || 'image');
+    els.modalBody.replaceChildren();
+    const shell = div('yaml-image-modal-preview');
+    const asset = state.assets.find((item) => item.path === path);
+    const previewUrl = asset ? assetPreviewUrl(path) : (/^https?:\/\//i.test(path) ? path : '');
+    if (previewUrl) { const img = document.createElement('img'); img.src = previewUrl; img.alt = fileNameFromPath(path); shell.append(img); }
+    else shell.append(div('sheet-empty','This image path is configured, but the file is not currently available in Assets.'));
+    const meta = div('yaml-image-modal-meta'); meta.append(div('', fileNameFromPath(path)), div('yaml-image-path', path));
+    shell.append(meta); els.modalBody.append(shell); els.modalBackdrop.classList.remove('hidden');
+  }
+
+  function openYamlAssetPicker(path, label) {
+    const currentValue = String(getAtPath(state.config, path) || '');
+    const allImages = assetsForYamlField(path, label, currentValue).filter((asset) => IMAGE_EXTENSIONS.has(extensionOf(asset.path)));
+    els.modalTitle.textContent = 'Choose image · ' + humanizeKey(label || 'image');
+    els.modalBody.replaceChildren();
+
+    const top = div('yaml-image-picker-top');
+    const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search project images…';
+    const upload = button('Upload new image', 'button primary');
+    const clear = button('No image', 'button ghost');
+    upload.addEventListener('click', () => { closeModal(); uploadAssetForYamlField(path, label, currentValue); });
+    clear.addEventListener('click', () => { closeModal(); setYamlAssetValue(path, '', 'setting.image_cleared'); });
+    top.append(search, upload, clear); els.modalBody.append(top);
+
+    const note = div('yaml-image-picker-note', allImages.length ? allImages.length + ' project images available. Click a thumbnail to use it.' : 'No project images found yet. Upload one to add it.');
+    els.modalBody.append(note);
+    const grid = div('yaml-image-picker-grid'); els.modalBody.append(grid);
+
+    const render = () => {
+      grid.replaceChildren();
+      const q = search.value.trim().toLowerCase();
+      const filtered = allImages.filter((asset) => !q || asset.path.toLowerCase().includes(q));
+      filtered.forEach((asset) => {
+        const card = button('', 'yaml-image-picker-card' + (asset.path === currentValue ? ' active' : ''));
+        const image = document.createElement('img'); image.src = assetPreviewUrl(asset.path); image.alt = fileNameFromPath(asset.path); image.loading='lazy';
+        const copy = div('yaml-image-picker-copy');
+        copy.append(div('yaml-image-picker-name', fileNameFromPath(asset.path)), div('yaml-image-picker-path', asset.path));
+        card.append(image, copy);
+        card.addEventListener('click', () => { closeModal(); setYamlAssetValue(path, asset.path, 'setting.image_selected'); toast('Image selected: ' + asset.path, 'success'); });
+        grid.append(card);
+      });
+      if (!filtered.length && allImages.length) grid.append(div('sheet-empty','No images match your search.'));
+    };
+    search.addEventListener('input', render); render();
+    els.modalBackdrop.classList.remove('hidden');
+    window.setTimeout(() => search.focus(), 0);
+  }
+
+  function imagePathFromYamlItem(item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return '';
+    return String(item.src || item.image || item.photo || item.logo || '');
+  }
+
+  function isYamlImageCollection(array, path, label) {
+    const joined = ((path || []).map(String).join('.') + '.' + String(label || '')).toLowerCase();
+    if (/(^|\.)(images|gallery)$/.test(joined)) return true;
+    return Array.isArray(array) && array.some((item) => IMAGE_EXTENSIONS.has(extensionOf(imagePathFromYamlItem(item))));
   }
 
   function assetsForYamlField(path, label, currentValue) {
@@ -1516,9 +2057,10 @@
         else target = directory + file.name;
         const result = await writeProjectBlob(target, file);
         setAtPath(state.config, path, target);
-        syncStructuredYaml('setting.asset_uploaded', { path: path.join('.'), asset: target, mode: result });
+        if (isRegformPath(path)) syncRegformSettings('regform.asset_uploaded', { path: displayConfigPath(path), asset: target, mode: result });
+        else syncStructuredYaml('setting.asset_uploaded', { path: path.join('.'), asset: target, mode: result });
         await loadAssets();
-        renderSettingsSection();
+        refreshYamlMutationView(path);
         toast((result === 'saved' ? 'Asset saved: ' : 'Asset staged: ') + target, 'success');
       } catch (error) {
         log('error', 'setting.asset_upload_failed', { path: path.join('.'), message: error.message });
@@ -1528,8 +2070,42 @@
     input.click();
   }
 
+  function blankYamlArrayItem(path, array) {
+    if (array && array.length) return blankLike(array[0]);
+    const joined = (path || []).map(String).join('.');
+    if (joined === 'registration.form.sections') {
+      return { id: 'new_section', title: 'New section', fields: [] };
+    }
+    if (/^registration\.form\.sections\.\d+\.fields$/.test(joined)) {
+      return { name: 'new_field', label: 'New field', type: 'text', required: false };
+    }
+    if (/(?:^|\.)(?:images|gallery)$/.test(joined)) return { src:'', alt:'', caption:'' };
+    if (/\.options$/.test(joined)) return '';
+    if (joined === 'registration.form.backend.trusted_proxies') return '';
+    return '';
+  }
+
+  function refreshYamlMutationView(path) {
+    if (isRegformPath(path)) {
+      const openPaths = new Set();
+      if (els.regformForm) {
+        els.regformForm.querySelectorAll('details.yaml-node[open][data-config-path]').forEach((node) => openPaths.add(node.dataset.configPath));
+      }
+      openPaths.add((path || []).map(String).join('.'));
+      renderRegformPage();
+      if (els.regformForm) {
+        els.regformForm.querySelectorAll('details.yaml-node[data-config-path]').forEach((node) => {
+          if (openPaths.has(node.dataset.configPath)) node.open = true;
+        });
+      }
+      return;
+    }
+    renderSettingsSection();
+  }
+
   function renderYamlArray(array, path, label, depth) {
-    const details = document.createElement('details'); details.className = 'yaml-node'; details.open = depth < 2 && !['themes','palettes','images','items'].includes(String(label||'').toLowerCase());
+    const imageCollection = isYamlImageCollection(array, path, label);
+    const details = document.createElement('details'); details.className = 'yaml-node' + (imageCollection ? ' yaml-image-collection' : ''); details.dataset.configPath = (path || []).map(String).join('.'); details.open = imageCollection ? depth < 4 : (depth < 2 && !['themes','palettes','images','items'].includes(String(label||'').toLowerCase()));
     const summary = document.createElement('summary');
     const left = document.createElement('span'); left.textContent = humanizeKey(label);
     const right = document.createElement('small'); right.textContent = array.length + ' items';
@@ -1538,7 +2114,12 @@
     array.forEach((item, index) => {
       const itemBox = div('yaml-array-item');
       const head = div('yaml-array-item-head');
-      head.append(div('', 'Item ' + (index + 1)));
+      if (imageCollection) {
+        const imagePath = imagePathFromYamlItem(item);
+        const identity = div('yaml-gallery-item-identity');
+        if (imagePath) { const imageAsset=state.assets.find((asset)=>asset.path===imagePath); if(imageAsset){const thumb=document.createElement('img');thumb.src=assetPreviewUrl(imagePath);thumb.alt='Image '+(index+1);identity.append(thumb);} }
+        const copy=div('');copy.append(div('', (item && item.caption) ? String(item.caption) : 'Image ' + (index + 1)), div('yaml-gallery-item-path', imagePath || 'No image selected'));identity.append(copy);head.append(identity);
+      } else head.append(div('', 'Item ' + (index + 1)));
       const actions = div('yaml-array-actions');
       const up = button('↑', 'yaml-mini-btn'); const down = button('↓', 'yaml-mini-btn');
       const clone = button('Duplicate', 'yaml-mini-btn'); const remove = button('Delete', 'yaml-mini-btn');
@@ -1554,15 +2135,16 @@
       } else itemBox.append(renderYamlScalar(item, path.concat(index), 'value'));
       body.append(itemBox);
     });
-    const add = button('+ Add item', 'button ghost yaml-add');
-    add.addEventListener('click', () => mutateYamlArray(path, (arr) => arr.push(blankLike(arr[0]))));
+    const add = button(imageCollection ? '+ Add image' : '+ Add item', 'button ghost yaml-add');
+    add.addEventListener('click', () => mutateYamlArray(path, (arr) => arr.push(blankYamlArrayItem(path, arr))));
     body.append(add); details.append(summary, body); return details;
   }
 
   function updateStructuredYaml(path, value) {
     try {
       setAtPath(state.config, path, value);
-      syncStructuredYaml('setting.changed', { path: path.join('.') });
+      if (isRegformPath(path)) syncRegformSettings('regform.setting_changed', { path: path.slice(2).join('.') });
+      else syncStructuredYaml('setting.changed', { path: path.join('.') });
       if (path.join('.') === 'conference.start_date' || path.join('.') === 'conference.end_date') renderSpreadsheet('program');
     } catch (error) {
       log('error', 'setting.change_failed', { path: path.join('.'), message: error.message });
@@ -1571,19 +2153,34 @@
   }
 
   function mutateYamlArray(path, mutator) {
-    const array = getAtPath(state.config, path);
-    if (!Array.isArray(array)) return;
-    mutator(array);
-    syncStructuredYaml('setting.array_changed', { path: path.join('.'), items: array.length });
-    renderSettingsSection();
+    try {
+      const array = getAtPath(state.config, path);
+      if (!Array.isArray(array)) throw new Error('Expected an array at ' + displayConfigPath(path));
+      mutator(array);
+      if (isRegformPath(path)) syncRegformSettings('regform.array_changed', { path: path.slice(2).join('.'), items: array.length });
+      else syncStructuredYaml('setting.array_changed', { path: path.join('.'), items: array.length });
+      refreshYamlMutationView(path);
+    } catch (error) {
+      log('error', 'setting.array_change_failed', { path: displayConfigPath(path), message: error.message, stack: error.stack || '' });
+      toast('Could not update ' + displayConfigPath(path) + ': ' + error.message, 'error');
+    }
+  }
+
+  function syncRegformSettings(eventName, details) {
+    state.regformConfig = getConfig('registration.form', Object.create(null));
+    state.regformYamlText = stringifyRegformSettings(state.regformConfig);
+    state.regformDirty = true;
+    if (state.activeView === 'overview') renderOverview();
+    updateSaveState();
+    log('debug', eventName, details);
   }
 
   function syncStructuredYaml(eventName, details) {
-    state.yamlText = window.YamlLite.stringify(state.config);
+    state.yamlText = window.YamlLite.stringify(conferenceConfigForStorage());
     state.yamlDirty = true;
     state.sectionYamlDirty = false;
     els.yamlEditor.value = state.yamlText;
-    setYamlStatus('valid', 'YAML valid · structured changes not saved');
+    setYamlStatus('valid', 'conference.yaml valid · structured changes not saved');
     if (state.activeSettingsSection) renderSectionYamlEditor();
     syncVisibleInlineYamlEditors();
     if (state.activeView === 'overview') renderOverview();
@@ -1596,7 +2193,7 @@
       const section = textarea.dataset.section || '';
       if (!section || state.sectionYamlDrafts.has(section) || !Object.prototype.hasOwnProperty.call(state.config, section)) return;
       const wrapper = Object.create(null);
-      wrapper[section] = deepClone(state.config[section]);
+      wrapper[section] = conferenceSectionForStorage(section);
       const next = window.YamlLite.stringify(wrapper);
       if (textarea.value !== next) textarea.value = next;
       const status = textarea.previousElementSibling;
@@ -1642,8 +2239,15 @@
     try {
       const text = els.yamlEditor.value;
       const config = window.YamlLite.parse(text);
-      state.yamlText = text;
-      state.config = config;
+      if (config.registration && typeof config.registration === 'object' && Object.prototype.hasOwnProperty.call(config.registration, 'form')) {
+        state.regformConfig = config.registration.form;
+        state.regformYamlText = stringifyRegformSettings(state.regformConfig);
+        state.regformDirty = true;
+        delete config.registration.form;
+        state.yamlText = window.YamlLite.stringify(config);
+        els.yamlEditor.value = state.yamlText;
+      } else state.yamlText = text;
+      state.config = attachRegformConfig(config, state.regformConfig);
       setYamlStatus('valid', 'YAML valid');
       if (!Object.prototype.hasOwnProperty.call(state.config, state.activeSettingsSection)) state.activeSettingsSection = Object.keys(state.config)[0] || '';
       renderSettings();
@@ -1668,16 +2272,11 @@
     if (!state.config) return;
     try {
       if (state.sectionYamlDirty && !applySectionYamlFromEditor()) return;
-      const emailProblem = validateRegformEmailSettings(true);
-      if (emailProblem) {
-        state.activeSettingsPage = 'regform';
-        switchView('settings');
-        renderSettings();
-        toast(emailProblem, 'error');
-        return false;
-      }
       const parsed = window.YamlLite.parse(state.yamlText);
-      state.config = parsed;
+      if (parsed.registration && typeof parsed.registration === 'object') delete parsed.registration.form;
+      state.yamlText = window.YamlLite.stringify(parsed);
+      els.yamlEditor.value = state.yamlText;
+      state.config = attachRegformConfig(parsed, state.regformConfig);
       const result = await writeProjectText('conference.yaml', state.yamlText.endsWith('\n') ? state.yamlText : state.yamlText + '\n');
       state.yamlDirty = false;
       setYamlStatus('valid', result === 'saved' ? 'YAML saved' : 'YAML staged for ZIP export');
@@ -1692,6 +2291,30 @@
       log('error', 'yaml.save_failed', { message: error.message });
       toast('Could not save YAML: ' + error.message, 'error');
       throw error;
+    }
+  }
+
+  async function saveRegformSettings() {
+    if (!state.config || !state.regformConfig) return false;
+    const emailProblem = validateRegformEmailSettings(true);
+    if (emailProblem) {
+      switchView('regform');
+      renderRegformPage();
+      toast(emailProblem, 'error');
+      return false;
+    }
+    try {
+      state.regformYamlText = stringifyRegformSettings(state.regformConfig);
+      const result = await writeProjectText('regform/settings.yaml', state.regformYamlText.endsWith('\n') ? state.regformYamlText : state.regformYamlText + '\n');
+      state.regformDirty = false;
+      updateSaveState();
+      log('info', 'regform.settings_' + result, { project: state.projectName, path:'regform/settings.yaml' });
+      toast(result === 'saved' ? 'regform/settings.yaml saved.' : 'regform/settings.yaml staged for ZIP export.', 'success');
+      return true;
+    } catch (error) {
+      log('error', 'regform.settings_save_failed', { message:error.message });
+      toast('Could not save regform/settings.yaml: ' + error.message, 'error');
+      return false;
     }
   }
 
@@ -2127,7 +2750,7 @@
     return state.assets.filter((asset)=>asset.path.startsWith('assets/documents/')&&extensionOf(asset.path)==='pdf');
   }
 
-  async function chooseAndUploadProgramPdf() {
+  async function chooseAndUploadProgramPdf(afterUpload) {
     const input=document.createElement('input');input.type='file';input.accept='application/pdf,.pdf';input.hidden=true;document.body.append(input);
     input.addEventListener('change',async()=>{
       const file=input.files&&input.files[0];input.remove();if(!file)return;
@@ -2137,6 +2760,7 @@
         await writeProjectBlob(path,file);
         const cfg=ensureProgramDownloadConfig();cfg.enabled=true;cfg.mode='local';cfg.local_file=path;cfg.local_filename=clean;
         syncStructuredYaml('program.pdf_uploaded',{path,bytes:file.size});await loadAssets();renderGenericSpreadsheet('program');
+        if (typeof afterUpload === 'function') afterUpload(path);
         toast('Program PDF uploaded and selected: '+path,'success');
       }catch(error){log('error','program.pdf_upload_failed',{message:error.message});toast('Could not upload Program PDF: '+error.message,'error');}
     });
@@ -2313,14 +2937,63 @@
     toast('People roles updated','success');
   }
 
+  function dummyPeopleRows() {
+    const rows=[
+      ['First Name 01','Last Name 01','Speaker','Invited Speaker','Affiliation 01','Country 01','Presentation Title 01','Invited lecture'],
+      ['First Name 02','Last Name 02','Speaker','Invited Speaker','Affiliation 02','Country 02','Presentation Title 02','Invited lecture'],
+      ['First Name 03','Last Name 03','Speaker','Invited Speaker','Affiliation 03','Country 03','Presentation Title 03','Invited lecture'],
+      ['First Name 04','Last Name 04','Speaker','Invited Speaker','Affiliation 04','Country 04','Presentation Title 04','Invited lecture'],
+      ['First Name 05','Last Name 05','Lecturer','School Lecturer','Affiliation 05','Country 05','Presentation Title 05','School lecture'],
+      ['First Name 06','Last Name 06','Lecturer','School Lecturer','Affiliation 06','Country 06','Presentation Title 06','School lecture'],
+      ['First Name 07','Last Name 07','Committee','Organizing Committee','Affiliation 07','Country 07','',''],
+      ['First Name 08','Last Name 08','Organizer','Organizing Committee; Local Organizer','Affiliation 08','Country 08','',''],
+      ['First Name 09','Last Name 09','Committee','Program Committee','Affiliation 09','Country 09','',''],
+      ['First Name 10','Last Name 10','Committee','Program Committee','Affiliation 10','Country 10','',''],
+      ['First Name 11','Last Name 11','Presenter','Oral Speaker','Affiliation 11','Country 11','Presentation Title 11','Oral contribution'],
+      ['First Name 12','Last Name 12','Presenter','Poster Presenter','Affiliation 12','Country 12','Presentation Title 12','Poster']
+    ];
+    const headers=state.people.headers.length?state.people.headers.slice():['First Name','Last Name','Category','Role','Affiliation','Country','Presentation Title','Presentation Type','Image','Visible'];
+    return rows.map((values)=>{
+      const row=Object.create(null);headers.forEach((h)=>row[h]='');
+      ['First Name','Last Name','Category','Role','Affiliation','Country','Presentation Title','Presentation Type'].forEach((h,i)=>{if(headers.includes(h))row[h]=values[i]||'';});
+      if(headers.includes('Image'))row.Image='';
+      if(headers.includes('Visible'))row.Visible='true';
+      return row;
+    });
+  }
+
+  async function togglePeopleDemo() {
+    if (!state.config) return;
+    if (state.peopleDemo.active) {
+      const snap=state.peopleDemo.snapshot;
+      if(snap){state.people.headers=snap.headers.slice();state.people.rows=snap.rows.map((row)=>Object.assign(Object.create(null),row));state.people.dirty=Boolean(snap.dirty);}
+      state.peopleDemo.active=false;state.peopleDemo.snapshot=null;
+      resetDocumentSelections();renderPeopleSpreadsheet();updateSaveState();
+      log('info','people.demo_restored',{rows:state.people.rows.length,dirty:state.people.dirty});
+      toast('Previous People restored. Demo rows discarded because they were not saved.','success');
+      return;
+    }
+    if (state.people.dirty) {
+      const proceed=await totemConfirm('Load demo People','Your current unsaved People rows will be kept in memory so you can restore them until you save the demo list. Continue?','Load demo People');
+      if(!proceed)return;
+    }
+    state.peopleDemo.snapshot={headers:state.people.headers.slice(),rows:state.people.rows.map((row)=>Object.assign(Object.create(null),row)),dirty:state.people.dirty};
+    state.people.rows=dummyPeopleRows();state.people.dirty=true;state.peopleDemo.active=true;
+    resetDocumentSelections();renderPeopleSpreadsheet();updateSaveState();els.savePeopleBtn.disabled=false;
+    log('info','people.demo_loaded',{rows:state.people.rows.length});
+    toast('Demo People loaded. Edit them freely; Save People or Save all writes them to people.csv.','success');
+  }
+
   function renderPeopleSpreadsheet() {
     const container=els.peopleEditor,sheet=state.people;container.replaceChildren();if(!state.config){renderNoProjectSheets();return;}
     renderPeopleRolesSection(container);
-    const shell=div('spreadsheet-shell people-sheet'),toolbar=div('sheet-toolbar');const add=button('Add person','button'),clearPeople=button('Clear People','button ghost danger');toolbar.append(add,clearPeople);sheetImportControls('people',toolbar,renderPeopleSpreadsheet);
+    const shell=div('spreadsheet-shell people-sheet'),toolbar=div('sheet-toolbar');const add=button('Add person','button'),demoPeople=button(state.peopleDemo.active?'Restore previous People':'Use demo People','button ghost'),clearPeople=button('Clear People','button ghost danger');toolbar.append(add,demoPeople,clearPeople);sheetImportControls('people',toolbar,renderPeopleSpreadsheet);
     const searchLabel=document.createElement('label');searchLabel.textContent='Filter';const search=document.createElement('input');search.type='search';search.placeholder='Name, role, title, affiliation…';searchLabel.append(search);toolbar.append(searchLabel);
     const catLabel=document.createElement('label');catLabel.textContent='Category';const catFilter=document.createElement('select');catFilter.className='category-filter';const all=document.createElement('option');all.value='';all.textContent='All';catFilter.append(all);peopleCategories().forEach((v)=>{const o=document.createElement('option');o.value=v;o.textContent=v;catFilter.append(o);});catLabel.append(catFilter);toolbar.append(catLabel);
     toolbar.append(div('sheet-meta',sheet.rows.length+' people'));
+    if(state.peopleDemo.active){const demoNote=div('people-demo-banner');demoNote.innerHTML='<b>Demo People loaded</b><span>These are normal editable rows. Save People or Save all to write them to people.csv. Restore previous People is available only until you save.</span>';shell.append(demoNote);}
     const scroll=div('sheet-scroll');shell.append(toolbar,scroll);container.append(shell);bindResponsiveSpreadsheet(shell,'people');
+    demoPeople.addEventListener('click',togglePeopleDemo);
     const fixedCore=['First Name','Last Name','Category','Role','Affiliation','Country'];
     const preferredContribution=['Presentation Title','Presentation Type'].filter((header)=>sheet.headers.includes(header));
     const reserved=new Set(fixedCore.concat(preferredContribution,['Image','Visible']));
@@ -2517,6 +3190,12 @@
       const text = window.CsvUtil.serialize(sheet.rows, sheet.headers, { bom: false, eol: '\r\n', finalEol: true, protectFormulae: false });
       const result = await writeProjectText(sheet.path, text);
       sheet.dirty = false;
+      if (kind === 'people' && state.peopleDemo.active) {
+        state.peopleDemo.active = false;
+        state.peopleDemo.snapshot = null;
+        log('info', 'people.demo_committed', { rows: sheet.rows.length, path: sheet.path });
+        renderPeopleSpreadsheet();
+      }
       updateSaveState();
       renderOverview();
       log('info', 'csv.' + result, { kind, rows: sheet.rows.length, path: sheet.path });
@@ -2594,7 +3273,7 @@
       return;
     }
     assets.forEach((asset) => {
-      const card = div('asset-card');
+      const card = div('asset-card'); card.dataset.assetPath=asset.path;
       const preview = div('asset-preview');
       const ext = extensionOf(asset.path);
       if (PREVIEWABLE_EXTENSIONS.has(ext)) {
@@ -2746,7 +3425,7 @@
     } finally { buttonEl.textContent = old; buttonEl.disabled = false; }
   }
 
-  async function collectProjectEntriesForExport() {
+  async function collectProjectEntriesForExport(options) {
     const map = new Map();
     if (state.mode === 'fs') {
       async function walk(dir, prefix) {
@@ -2769,6 +3448,7 @@
     }
 
     map.set('conference.yaml', new Blob([state.yamlText.endsWith('\n') ? state.yamlText : state.yamlText + '\n'], { type: 'text/yaml' }));
+    map.set('regform/settings.yaml', new Blob([(state.regformYamlText || stringifyRegformSettings(state.regformConfig)).replace(/\n?$/, '\n')], { type: 'text/yaml' }));
     map.set(state.people.path, new Blob([window.CsvUtil.serialize(state.people.rows, state.people.headers, { bom:false, eol:'\r\n', finalEol:true, protectFormulae:false })], { type:'text/csv' }));
     map.set(state.program.path, new Blob([window.CsvUtil.serialize(state.program.rows, state.program.headers, { bom:false, eol:'\r\n', finalEol:true, protectFormulae:false })], { type:'text/csv' }));
     const versionCopy = Object.assign({}, state.version, { version: normalizeSemver(els.releaseVersion.value || state.version.version), status: els.releaseStatus.value || state.version.status, updated_at: new Date().toISOString() });
@@ -2851,6 +3531,7 @@
     if (!response.ok) throw new Error('Bundled placeholder template is unavailable (HTTP '+response.status+').');
     const entries = stripBundleRoot(await readZipEntries(await response.blob()));
     if (!entries.has('conference.yaml')) throw new Error('Bundled placeholder template is invalid: conference.yaml is missing.');
+    if (!entries.has('regform/settings.yaml')) throw new Error('Bundled placeholder template is invalid: regform/settings.yaml is missing.');
     return entries;
   }
 
@@ -3005,7 +3686,7 @@
     const labelLabel=document.createElement('label');labelLabel.textContent='Section label';const label=document.createElement('input');label.value=cfg.label||'';label.addEventListener('input',()=>{cfg.label=label.value;syncStructuredYaml('important_dates.label',{});});labelLabel.append(label);
     const titleLabel=document.createElement('label');titleLabel.textContent='Title';const title=document.createElement('input');title.value=cfg.title||'Important Dates';title.addEventListener('input',()=>{cfg.title=title.value;syncStructuredYaml('important_dates.title',{});});titleLabel.append(title);head.append(enabledLabel,labelLabel,titleLabel);shell.append(head);
     const toolbar=div('inline-actions');const add=button('Add date','button');const sort=button('Sort by date','button ghost');add.addEventListener('click',()=>{cfg.items.push({date:'TBC',description:'New important date'});syncStructuredYaml('important_dates.item_added',{});renderImportantDates();});sort.addEventListener('click',()=>{cfg.items.sort((a,b)=>{const A=parseHumanDate(a.date).iso||'9999',B=parseHumanDate(b.date).iso||'9999';return A.localeCompare(B);});syncStructuredYaml('important_dates.sorted',{});renderImportantDates();});toolbar.append(add,sort);shell.append(toolbar);
-    const list=div('date-list');cfg.items.forEach((item,index)=>{const parsed=parseHumanDate(item.date),row=div('date-row');const dl=document.createElement('label');dl.textContent='Date';const di=document.createElement('input');di.type='date';di.value=parsed.iso;dl.append(di);const descL=document.createElement('label');descL.textContent='Description';const desc=document.createElement('input');desc.value=item.description||'';descL.append(desc);const noteL=document.createElement('label');noteL.textContent='Note';const note=document.createElement('input');note.value=parsed.note||'';note.placeholder='TBC / provisional';noteL.append(note);const actions=div('date-row-actions');const up=button('↑','button ghost'),down=button('↓','button ghost'),del=button('Delete','button ghost');const apply=()=>{item.date=formatImportantDate(di.value,note.value.trim());item.description=desc.value;syncStructuredYaml('important_dates.changed',{index:index+1});};di.addEventListener('change',apply);note.addEventListener('input',apply);desc.addEventListener('input',apply);up.disabled=index===0;down.disabled=index===cfg.items.length-1;up.addEventListener('click',()=>{[cfg.items[index-1],cfg.items[index]]=[cfg.items[index],cfg.items[index-1]];syncStructuredYaml('important_dates.reordered',{});renderImportantDates();});down.addEventListener('click',()=>{[cfg.items[index+1],cfg.items[index]]=[cfg.items[index],cfg.items[index+1]];syncStructuredYaml('important_dates.reordered',{});renderImportantDates();});del.addEventListener('click',async()=>{if(!await totemConfirm('Delete important date','Delete this important date?','Delete',{danger:true}))return;cfg.items.splice(index,1);syncStructuredYaml('important_dates.deleted',{});renderImportantDates();});actions.append(up,down,del);row.append(dl,descL,noteL,actions);list.append(row);});shell.append(list);host.append(shell);
+    const list=div('date-list');cfg.items.forEach((item,index)=>{const parsed=parseHumanDate(item.date),row=div('date-row');row.dataset.dateIndex=String(index);row.dataset.configPath='important_dates.items.'+index;const dl=document.createElement('label');dl.textContent='Date';const di=document.createElement('input');di.type='date';di.value=parsed.iso;dl.append(di);const descL=document.createElement('label');descL.textContent='Description';const desc=document.createElement('input');desc.value=item.description||'';descL.append(desc);const noteL=document.createElement('label');noteL.textContent='Note';const note=document.createElement('input');note.value=parsed.note||'';note.placeholder='TBC / provisional';noteL.append(note);const actions=div('date-row-actions');const up=button('↑','button ghost'),down=button('↓','button ghost'),del=button('Delete','button ghost');const apply=()=>{item.date=formatImportantDate(di.value,note.value.trim());item.description=desc.value;syncStructuredYaml('important_dates.changed',{index:index+1});};di.addEventListener('change',apply);note.addEventListener('input',apply);desc.addEventListener('input',apply);up.disabled=index===0;down.disabled=index===cfg.items.length-1;up.addEventListener('click',()=>{[cfg.items[index-1],cfg.items[index]]=[cfg.items[index],cfg.items[index-1]];syncStructuredYaml('important_dates.reordered',{});renderImportantDates();});down.addEventListener('click',()=>{[cfg.items[index+1],cfg.items[index]]=[cfg.items[index],cfg.items[index+1]];syncStructuredYaml('important_dates.reordered',{});renderImportantDates();});del.addEventListener('click',async()=>{if(!await totemConfirm('Delete important date','Delete this important date?','Delete',{danger:true}))return;cfg.items.splice(index,1);syncStructuredYaml('important_dates.deleted',{});renderImportantDates();});actions.append(up,down,del);row.append(dl,descL,noteL,actions);list.append(row);});shell.append(list);host.append(shell);
   }
 
   async function saveImportantDates() { if (!state.config) return; await saveYaml(); renderImportantDates(); }
@@ -3031,7 +3712,15 @@
       if (Array.isArray(value)) { value.forEach((item,index)=>walk(item, parts.concat(index))); return; }
       if (value && typeof value === 'object') Object.keys(value).forEach((key)=>walk(value[key], parts.concat(key)));
     }
-    if (state.config) Object.keys(state.config).forEach((key)=>walk(state.config[key],[key]));
+    if (state.config) {
+      const publicConfig = conferenceConfigForStorage();
+      Object.keys(publicConfig).forEach((key)=>walk(publicConfig[key],[key]));
+      if (state.regformConfig && typeof state.regformConfig === 'object') {
+        const before = issues.length;
+        walk(state.regformConfig, ['regform']);
+        for (let i = before; i < issues.length; i += 1) issues[i].source = 'regform/settings.yaml';
+      }
+    }
     [['people',state.people],['program',state.program]].forEach(([kind,sheet])=>{
       (sheet.rows||[]).forEach((row,rowIndex)=>{
         (sheet.headers||[]).forEach((header)=>{
@@ -3059,7 +3748,13 @@
   function openPlaceholderIssue(issue) {
     if (!issue) return;
     if (issue.kind === 'config') {
-      const section=String(issue.pathParts&&issue.pathParts[0]||''); const page=pageForSettingsSection(section);
+      const section=String(issue.pathParts&&issue.pathParts[0]||'');
+      if (issue.source === 'regform/settings.yaml' || section === 'regform') {
+        switchView('regform'); renderRegformPage();
+        window.setTimeout(()=>pulseElement(document.getElementById('editor-section-regform') || document.getElementById('editor-section-regform-mail')),40);
+        return;
+      }
+      const page=pageForSettingsSection(section);
       if(page) state.activeSettingsPage=page.id;
       state.activeSettingsSection=section;
       switchView('settings'); renderSettings();
@@ -3095,7 +3790,7 @@
 
     const toolbar=div('check-toolbar panel flat');
     const searchLabel=document.createElement('label');searchLabel.className='grow';searchLabel.textContent='Filter';const search=document.createElement('input');search.type='search';search.placeholder='Path, value, TBC, TODO…';searchLabel.append(search);
-    const sourceLabel=document.createElement('label');sourceLabel.textContent='Source';const source=document.createElement('select');[['','All'],['conference.yaml','conference.yaml'],[fileNameFromPath(state.people.path),'People'],[fileNameFromPath(state.program.path),'Program']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;source.append(o);});sourceLabel.append(source);
+    const sourceLabel=document.createElement('label');sourceLabel.textContent='Source';const source=document.createElement('select');[['','All'],['conference.yaml','conference.yaml'],['regform/settings.yaml','Regform settings'],[fileNameFromPath(state.people.path),'People'],[fileNameFromPath(state.program.path),'Program']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;source.append(o);});sourceLabel.append(source);
     const prev=button('Previous','button ghost'),next=button('Next unresolved','button'),counter=div('sheet-meta','');toolbar.append(searchLabel,sourceLabel,prev,next,counter);shell.append(toolbar);
     const list=div('check-list');shell.append(list);host.append(shell);
 
@@ -3166,6 +3861,7 @@
   function conferenceVisuals() {
     const shortName=getConfig('conference.acronym',getConfig('site.short_name',state.projectName||'Conference'));
     const fullName=getConfig('conference.full_name',getConfig('site.title',shortName));
+    const badgeName=getConfig('site.title',state.projectName||shortName||'Conference');
     const location=[getConfig('conference.venue',''),getConfig('conference.city',''),getConfig('conference.country','')].filter(Boolean).join(', ');
     const badgeLocation=[getConfig('conference.city',''),getConfig('conference.country','')].filter(Boolean).join(', ');
     const date=getConfig('conference.date_label',[getConfig('conference.start_date',''),getConfig('conference.end_date','')].filter(Boolean).join(' - '));
@@ -3177,7 +3873,7 @@
     const organizerAddress=getConfig('organizer.address',getConfig('organization.address',getConfig('mifp.address','Via Appia Nuova 31, 00040 Marino, RM - Italy')));
     const phone=getConfig('conference.phone',getConfig('organizer.phone',getConfig('organization.phone','')));
     const email=getConfig('conference.email',getConfig('organizer.email',getConfig('organization.email','')));
-    return {shortName,fullName,location,badgeLocation,date,organizerPath,confPath,badgeFooterPath:String(badgeCfg.footer_logo||''),certificateCenterPath:String(signatureCfg.center_logo||confPath||''),certificateStampPath:String(signatureCfg.stamp_logo||''),certificateMarginMm:20,signatures,signatureColumns:signatureCfg.signature_columns,accent:palette.primary||'#b5122b',organizerAddress,phone,email};
+    return {shortName,badgeName,fullName,location,badgeLocation,date,organizerPath,confPath,badgeFooterPath:String(badgeCfg.footer_logo||''),certificateCenterPath:String(signatureCfg.center_logo||confPath||''),certificateStampPath:String(signatureCfg.stamp_logo||''),certificateMarginMm:20,signatures,signatureColumns:signatureCfg.signature_columns,accent:palette.primary||'#b5122b',organizerAddress,phone,email};
   }
 
   function loadImage(url) { return new Promise((resolve)=>{if(!url){resolve(null);return;}const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>resolve(null);img.src=url;}); }
@@ -3224,6 +3920,26 @@
 
   function previewPersonSelect(kind,onChange){const label=document.createElement('label');label.className='doc-preview-person';label.textContent='Preview person';const select=document.createElement('select');label.append(select);function sync(){const people=selectedPeople(kind),preferred=state.documentPreviewPerson[kind];select.replaceChildren();people.forEach(p=>{const o=document.createElement('option');o.value=String(p.__index);o.textContent=[p['First Name'],p['Last Name']].filter(Boolean).join(' ')||('Person '+(p.__index+1));select.append(o);});const valid=people.some(p=>p.__index===preferred);const idx=valid?preferred:(people[0]?people[0].__index:null);state.documentPreviewPerson[kind]=idx;if(idx!=null)select.value=String(idx);select.disabled=!people.length;}sync();select.addEventListener('change',()=>{state.documentPreviewPerson[kind]=Number(select.value);if(onChange)onChange();});return{node:label,select,sync};}
 
+  function documentValidation(message) { const error=new Error(message); error.code='DOCUMENT_VALIDATION'; return error; }
+
+  const DOCUMENT_DUMMY_PEOPLE = [
+    ['Elena','Rossi','Speaker','Sapienza University of Rome','Italy'],
+    ['Marko','Petrović','Participant','University of Belgrade','Serbia'],
+    ['Sofia','Martínez','Invited Speaker','Universidad Autónoma de Madrid','Spain'],
+    ['Thomas','Weber','Participant','Max Planck Institute for the Science of Light','Germany'],
+    ['Claire','Dubois','Poster','Université Paris-Saclay','France'],
+    ['Liam','O’Connor','Participant','Trinity College Dublin','Ireland'],
+    ['Anna','Kowalska','Speaker','University of Warsaw','Poland'],
+    ['Nikola','Jovanović','Participant','Institute of Physics Belgrade','Serbia'],
+    ['Maria','Papadopoulou','Participant','National Technical University of Athens','Greece'],
+    ['David','Novak','Speaker','Charles University','Czech Republic'],
+    ['Laura','Bianchi','Participant','University of Milan','Italy'],
+    ['Mikkel','Hansen','Participant','Technical University of Denmark','Denmark']
+  ].map((p,index)=>({'First Name':p[0],'Last Name':p[1],Role:p[2],Category:p[2],Affiliation:p[3],Country:p[4],Visible:'true',__dummy:true,__index:index}));
+
+  function dummyBadgePeople(count){const total=Math.max(1,Number(count)||1);return Array.from({length:total},(_,index)=>Object.assign({},DOCUMENT_DUMMY_PEOPLE[index%DOCUMENT_DUMMY_PEOPLE.length],{__dummyIndex:index}));}
+  function dummyCertificatePerson(){return {'First Name':'Elena','Last Name':'Rossi',Role:'Invited Speaker',Category:'Invited Speaker',Affiliation:'Sapienza University of Rome',Country:'Italy','Presentation Title':'Coherent light–matter interactions in emerging nanostructures','Presentation Type':'Invited',Visible:'true',__dummy:true};}
+
   function renderBadgePanel() {
     const optsState=state.documentOptions.badges;
     if (!Number.isFinite(Number(optsState.blankCount))) optsState.blankCount=0;
@@ -3240,7 +3956,7 @@
     const gl=document.createElement('label');gl.textContent='Gap (mm)';const gi=document.createElement('input');gi.type='number';gi.min='0';gi.max='20';gi.step='.5';gi.value=String(optsState.gapMm);gl.append(gi);
     const cl=document.createElement('label');cl.textContent='Crop marks';const cs=document.createElement('select');[['true','Yes'],['false','No']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;cs.append(o);});cs.value=optsState.cutLines?'true':'false';cl.append(cs);
     const blankLabel=document.createElement('label');blankLabel.textContent='Blank badges';const blankInput=document.createElement('input');blankInput.type='number';blankInput.min='0';blankInput.max='200';blankInput.step='1';blankInput.value=String(Math.max(0,Number(optsState.blankCount)||0));blankLabel.append(blankInput);
-    const badgeCfg=ensureBadgeDocumentConfig();const footerField=certificateAssetField('Bottom logo / sponsor',badgeCfg.footer_logo||'',true);
+    const badgeCfg=ensureBadgeDocumentConfig();const footerField=certificateAssetField('Bottom logo / sponsor',badgeCfg.footer_logo||'',true,['documents','badges','footer_logo']);
     cfg.append(preset,wl,hl,ol,ml,gl,cl,blankLabel,footerField.node);panel.append(cfg);
 
     const previewSection=div('document-section document-preview-section');
@@ -3251,7 +3967,7 @@
 
     const exportSection=div('document-section document-export-section');
     const exportMeta=div('document-export-meta');const picker=participantPicker('badges',updateExportMeta,'People to export');exportSection.append(picker,exportMeta);panel.append(exportSection);
-    const actions=div('doc-actions');const pdf=button('Export badges PDF','button primary'),docx=button('Export badges DOCX','button'),tpl=button('Filled template DOCX','button ghost');actions.append(pdf,docx,tpl);const progress=createDocumentProgress();panel.append(actions,progress.node);
+    const actions=div('doc-actions');const pdf=button('Export badges PDF','button primary'),docx=button('Export badges DOCX','button'),tpl=button('Filled template DOCX','button ghost'),dummy=button('Test page · dummy names','button ghost');actions.append(pdf,docx,tpl,dummy);const progress=createDocumentProgress();panel.append(actions,progress.node);
 
     let refreshTimer=null;
     function options(){Object.assign(optsState,{widthMm:Number(wi.value),heightMm:Number(hi.value),marginMm:Number(mi.value),gapMm:Number(gi.value),cutLines:cs.value==='true',pageOrientation:os.value,preset:ps.value,blankCount:Math.max(0,Math.floor(Number(blankInput.value)||0)),previewPage:Math.max(1,Math.floor(Number(pageInput.value)||1)),exportScope:'all'});return Object.assign({scale:6},optsState);}
@@ -3265,10 +3981,11 @@
     async function refresh(){const token=++state.documentPreviewToken.badges;const all=previewEntries(),layout=window.DocumentTools.badgeLayout(options(),all.length),page=clampPage(layout);summary.replaceChildren(div('',layout.cols+' × '+layout.rows+' · '+layout.perPage+' badges / A4'),div('',humanizeKey(layout.orientation)+' · '+layout.pageWidthMm+' × '+layout.pageHeightMm+' mm'),div('',all.length+' preview item'+(all.length===1?'':'s')+' · '+Math.max(1,layout.pages)+' page'+(layout.pages===1?'':'s')));status.classList.remove('hidden');preview.classList.add('is-updating');const start=(page-1)*layout.perPage,subset=all.slice(start,start+layout.perPage);const v=await documentVisualsWithImages();if(token!==state.documentPreviewToken.badges)return;const result=window.DocumentTools.renderBadgePages(subset,options(),v);if(token!==state.documentPreviewToken.badges)return;const c=result.pages[0];if(c){const stage=documentPreviewStage(c,'Badge sheet preview','A4 '+layout.orientation+' · page '+page+' / '+Math.max(1,layout.pages));preview.querySelector('.doc-preview-stage')?.remove();preview.append(stage);}status.classList.add('hidden');preview.classList.remove('is-updating');}
     function setPreset(){if(ps.value!=='custom'){const [w,h]=ps.value.split('x');wi.value=w;hi.value=h;mi.value='0';gi.value='0';}scheduleRefresh(40);}
     ps.addEventListener('change',setPreset);[wi,hi,mi,gi,blankInput].forEach(el=>{el.addEventListener('input',()=>{updateExportMeta();scheduleRefresh();});el.addEventListener('change',()=>scheduleRefresh(40));});[cs,os].forEach(el=>el.addEventListener('change',()=>scheduleRefresh(40)));footerField.select.addEventListener('change',()=>{badgeCfg.footer_logo=footerField.select.value;syncStructuredYaml('documents.badges.footer_logo',{});scheduleRefresh(80);});pageInput.addEventListener('change',()=>scheduleRefresh(20));pageInput.addEventListener('input',()=>{optsState.previewPage=Math.max(1,Math.floor(Number(pageInput.value)||1));});
-    async function pages(report){const entries=exportEntries();if(!entries.length)throw new Error('Select at least one person or add a blank badge');report(5,'Loading conference assets');await nextPaint();const v=await documentVisualsWithImages();report(18,'Rendering badge sheets');await nextPaint();const result=window.DocumentTools.renderBadgePages(entries,options(),v,(n,label)=>report(18+n*.47,label));report(67,'Badge sheets rendered');return{canvases:result.pages,suffix:''};}
+    async function pages(report){const entries=exportEntries();if(!entries.length)throw documentValidation('Select at least one person or add a blank badge.');report(5,'Loading conference assets');await nextPaint();const v=await documentVisualsWithImages();report(18,'Rendering badge sheets');await nextPaint();const result=window.DocumentTools.renderBadgePages(entries,options(),v,(n,label)=>report(18+n*.47,label));report(67,'Badge sheets rendered');return{canvases:result.pages,suffix:''};}
     pdf.addEventListener('click',()=>documentExportButton(pdf,progress,async(report)=>{const out=await pages(report);const blob=await window.DocumentTools.buildPdfFromCanvases(out.canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-badges.pdf',blob);}));
     docx.addEventListener('click',()=>documentExportButton(docx,progress,async(report)=>{const out=await pages(report);const blob=await window.DocumentTools.buildDocxFromCanvases(out.canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-badges.docx',blob);}));
     tpl.addEventListener('click',()=>documentExportButton(tpl,progress,(report)=>downloadFilledTemplateDocs('badge',report)));
+    dummy.addEventListener('click',()=>documentExportButton(dummy,progress,async(report)=>{report(8,'Building a complete dummy badge sheet');const opts=options();const layout=window.DocumentTools.badgeLayout(opts,1);const people=dummyBadgePeople(layout.perPage);await nextPaint();const v=await documentVisualsWithImages();report(30,'Rendering '+people.length+' dummy badges');const result=window.DocumentTools.renderBadgePages(people,opts,v,(n,l)=>report(30+n*.38,l));const blob=await window.DocumentTools.buildPdfFromCanvases(result.pages.slice(0,1),(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-badges-test-page.pdf',blob);log('info','documents.dummy_badge_page_exported',{count:people.length,conference:v.badgeName||v.shortName});}));
     updateExportMeta();refresh();return panel;
   }
 
@@ -3295,13 +4012,47 @@
     render();return wrap;
   }
 
-  function certificateAssetField(labelText,value,allowNone) {
-    const label=document.createElement('label');label.className='certificate-asset-field';label.textContent=labelText;
-    const select=document.createElement('select');
+  function certificateAssetField(labelText,value,allowNone,configPath) {
+    const label=document.createElement('label');label.className='certificate-asset-field enhanced-image-field';
+    const caption=document.createElement('span');caption.textContent=labelText;label.append(caption);
+    const select=document.createElement('select');select.className='sr-only';
     if(allowNone){const none=document.createElement('option');none.value='';none.textContent='None';select.append(none);}
-    state.assets.filter(asset=>PREVIEWABLE_EXTENSIONS.has(extensionOf(asset.path))&&!asset.path.startsWith('assets/people/')).sort((a,b)=>{const score=x=>/(?:branding|logo|stamp|seal)/i.test(x.path)?0:/assets\/misc\//i.test(x.path)?1:2;return score(a)-score(b)||a.path.localeCompare(b.path);}).forEach(asset=>{const o=document.createElement('option');o.value=asset.path;o.textContent=asset.path;select.append(o);});
+    const imageAssets=state.assets.filter(asset=>PREVIEWABLE_EXTENSIONS.has(extensionOf(asset.path))&&!asset.path.startsWith('assets/people/')).sort((a,b)=>{const score=x=>/(?:branding|logo|stamp|seal)/i.test(x.path)?0:/assets\/misc\//i.test(x.path)?1:2;return score(a)-score(b)||a.path.localeCompare(b.path);});
+    imageAssets.forEach(asset=>{const o=document.createElement('option');o.value=asset.path;o.textContent=asset.path;select.append(o);});
     if(value&&!Array.from(select.options).some(o=>o.value===value)){const o=document.createElement('option');o.value=value;o.textContent=value;select.append(o);}
-    select.value=value||'';label.append(select);return {node:label,select};
+    select.value=value||'';
+
+    const picker=div('document-image-picker');
+    const preview=div('document-image-picker-preview');
+    const controls=div('document-image-picker-controls');
+    const pathText=div('yaml-image-path');
+    const actions=div('document-image-picker-actions');
+    const choose=button(select.value?'Change image':'Choose image','button ghost');
+    const upload=button(select.value?'Replace':'Upload','button ghost');
+    const view=button('View','button ghost');
+    const remove=button('Remove','button ghost danger');
+    actions.append(choose,upload,view,remove);controls.append(pathText,actions);picker.append(preview,controls);label.append(select,picker);
+
+    const refreshVisual=()=>{
+      preview.replaceChildren();const path=select.value||'';pathText.textContent=path||'No image selected';
+      const asset=state.assets.find(a=>a.path===path);if(asset){const img=document.createElement('img');img.src=assetPreviewUrl(path);img.alt=labelText;preview.append(img);}else preview.append(div('document-image-picker-empty',path?'Missing':'None'));
+      choose.textContent=path?'Change image':'Choose image';upload.textContent=path?'Replace':'Upload';view.disabled=!path;remove.disabled=!path;
+    };
+    const chooseModal=()=>{
+      els.modalTitle.textContent='Choose image · '+labelText;els.modalBody.replaceChildren();
+      const top=div('yaml-image-picker-top');const search=document.createElement('input');search.type='search';search.placeholder='Search project images…';const none=button('No image','button ghost');top.append(search,none);els.modalBody.append(top);
+      const grid=div('yaml-image-picker-grid');els.modalBody.append(grid);
+      const render=()=>{grid.replaceChildren();const q=search.value.trim().toLowerCase();imageAssets.filter(a=>!q||a.path.toLowerCase().includes(q)).forEach(asset=>{const card=button('','yaml-image-picker-card'+(asset.path===select.value?' active':''));const img=document.createElement('img');img.src=assetPreviewUrl(asset.path);img.alt=fileNameFromPath(asset.path);const copy=div('yaml-image-picker-copy');copy.append(div('yaml-image-picker-name',fileNameFromPath(asset.path)),div('yaml-image-picker-path',asset.path));card.append(img,copy);card.addEventListener('click',()=>{select.value=asset.path;closeModal();select.dispatchEvent(new Event('change',{bubbles:true}));refreshVisual();});grid.append(card);});};
+      search.addEventListener('input',render);none.addEventListener('click',()=>{select.value='';closeModal();select.dispatchEvent(new Event('change',{bubbles:true}));refreshVisual();});render();els.modalBackdrop.classList.remove('hidden');window.setTimeout(()=>search.focus(),0);
+    };
+    choose.addEventListener('click',chooseModal);
+    view.addEventListener('click',()=>openYamlImagePreview(select.value,labelText));
+    remove.addEventListener('click',()=>{select.value='';select.dispatchEvent(new Event('change',{bubbles:true}));refreshVisual();});
+    upload.addEventListener('click',()=>{
+      const input=document.createElement('input');input.type='file';input.accept='image/*';input.hidden=true;document.body.append(input);
+      input.addEventListener('change',async()=>{const file=input.files&&input.files[0];input.remove();if(!file)return;try{const current=select.value||'';const directory=current&&current.includes('/')?current.slice(0,current.lastIndexOf('/')+1):'assets/branding/';const sameExt=current&&extensionOf(current)===extensionOf(file.name)&&state.assets.some(a=>a.path===current);const target=sameExt?current:directory+file.name;await writeProjectBlob(target,file);if(Array.isArray(configPath))setAtPath(state.config,configPath,target);await loadAssets();syncStructuredYaml('documents.image_uploaded',{path:(configPath||[]).join('.'),asset:target});renderDocuments();toast('Image saved: '+target,'success');}catch(error){log('error','documents.image_upload_failed',{message:error.message});toast('Could not save image: '+error.message,'error');}});input.click();
+    });
+    refreshVisual();return {node:label,select,refresh:refreshVisual};
   }
 
   function renderCertificatePanel() {
@@ -3309,37 +4060,38 @@
     const panel=div('panel document-panel certificate-document-panel');const h=document.createElement('div');h.className='document-panel-head';h.innerHTML='<div><div class="eyebrow">A4 · 20 mm white border</div><h2>Certificates</h2><p>Stable automatic preview; People selection affects export only.</p></div>';panel.append(h);
     const cfg=div('doc-config-grid document-control-block');
     const pl=document.createElement('label');pl.textContent='Presentation details';const ps=document.createElement('select');[['true','Include when a title is found'],['false','Attendance only']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ps.append(o);});ps.value=optsState.includePresentation!==false?'true':'false';pl.append(ps);
-    const centerField=certificateAssetField('Logo below signatures',cfgState.center_logo||getConfig('assets.logo',''),true);const stampField=certificateAssetField('Stamp · bottom left',cfgState.stamp_logo||'',true);
+    const centerField=certificateAssetField('Logo below signatures',cfgState.center_logo||getConfig('assets.logo',''),true,['documents','certificates','center_logo']);const stampField=certificateAssetField('Stamp · bottom left',cfgState.stamp_logo||'',true,['documents','certificates','stamp_logo']);
     cfg.append(pl,centerField.node,stampField.node);panel.append(cfg);
     panel.append(certificateSignatureEditor(scheduleRefresh));
 
     const previewSection=div('document-section document-preview-section');const previewHead=div('document-section-head');previewHead.innerHTML='<div><b>Preview</b><span>Automatic sample from People. Typing no longer clears or rebuilds the preview container.</span></div>';
     const preview=div('doc-preview-wrap certificate-preview'),status=div('doc-preview-status hidden','Updating preview…');preview.append(status);previewSection.append(previewHead,preview);panel.append(previewSection);
     const exportSection=div('document-section document-export-section');const exportMeta=div('document-export-meta');const picker=participantPicker('certificates',updateExportMeta,'People to export');exportSection.append(picker,exportMeta);panel.append(exportSection);
-    const actions=div('doc-actions');const pdf=button('Export certificates PDF','button primary'),docx=button('Export certificates DOCX','button'),tpl=button('Filled template DOCX','button ghost');actions.append(pdf,docx,tpl);const progress=createDocumentProgress();panel.append(actions,progress.node);
+    const actions=div('doc-actions');const pdf=button('Export certificates PDF','button primary'),docx=button('Export certificates DOCX','button'),tpl=button('Filled template DOCX','button ghost'),dummy=button('Test certificate · dummy name','button ghost');actions.append(pdf,docx,tpl,dummy);const progress=createDocumentProgress();panel.append(actions,progress.node);
 
     let refreshTimer=null;
     function options(){optsState.includePresentation=ps.value==='true';return{includePresentation:optsState.includePresentation,scale:6};}
     function previewPerson(){const visible=state.people.rows.find(p=>normalizeBooleanString(p.Visible)!=='false');const base=visible||state.people.rows[0]||{'First Name':'FIRST NAME','Last Name':'LAST NAME',Affiliation:'Affiliation',Country:'Country',Role:'Speaker'};return Object.assign({},base,{__presentation:presentationForPerson(base)});}
     function updateExportMeta(){const count=selectedPeople('certificates').length;exportMeta.textContent=count+' people selected. PDF, rendered DOCX and filled template export use only this selection.';}
     function scheduleRefresh(delay){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,typeof delay==='number'?delay:220);}
-    async function pages(report){const people=selectedPeople('certificates');if(!people.length)throw new Error('Select at least one person for export');report(4,'Loading conference assets');await nextPaint();const v=await documentVisualsWithImages(),out=[];for(let i=0;i<people.length;i++){const p=Object.assign({},people[i],{__presentation:presentationForPerson(people[i])});const page=window.DocumentTools.renderCertificatePages([p],options(),v)[0];out.push(page);report(10+((i+1)/people.length)*58,'Rendering certificate '+(i+1)+' / '+people.length);if(i%2===0)await nextPaint();}return out;}
+    async function pages(report){const people=selectedPeople('certificates');if(!people.length)throw documentValidation('Select at least one person for export.');report(4,'Loading conference assets');await nextPaint();const v=await documentVisualsWithImages(),out=[];for(let i=0;i<people.length;i++){const p=Object.assign({},people[i],{__presentation:presentationForPerson(people[i])});const page=window.DocumentTools.renderCertificatePages([p],options(),v)[0];out.push(page);report(10+((i+1)/people.length)*58,'Rendering certificate '+(i+1)+' / '+people.length);if(i%2===0)await nextPaint();}return out;}
     async function refresh(){const token=++state.documentPreviewToken.certificates;status.classList.remove('hidden');preview.classList.add('is-updating');const person=previewPerson(),v=await documentVisualsWithImages();if(token!==state.documentPreviewToken.certificates)return;const result=window.DocumentTools.renderCertificatePages([person],options(),v);if(token!==state.documentPreviewToken.certificates)return;const name=[person['First Name'],person['Last Name']].filter(Boolean).join(' ')||'Sample person';const stage=documentPreviewStage(result[0],'Certificate preview',name);preview.querySelector('.doc-preview-stage')?.remove();preview.append(stage);status.classList.add('hidden');preview.classList.remove('is-updating');}
     function persistVisualOptions(reason){cfgState.center_logo=centerField.select.value;cfgState.stamp_logo=stampField.select.value;cfgState.page_margin_mm=20;syncStructuredYaml(reason,{});scheduleRefresh(80);}
     ps.addEventListener('change',()=>{optsState.includePresentation=ps.value==='true';scheduleRefresh(60);});centerField.select.addEventListener('change',()=>persistVisualOptions('documents.certificates.center_logo'));stampField.select.addEventListener('change',()=>persistVisualOptions('documents.certificates.stamp_logo'));
     pdf.addEventListener('click',()=>documentExportButton(pdf,progress,async(report)=>{const canvases=await pages(report);const blob=await window.DocumentTools.buildPdfFromCanvases(canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-certificates.pdf',blob);}));
     docx.addEventListener('click',()=>documentExportButton(docx,progress,async(report)=>{const canvases=await pages(report);const blob=await window.DocumentTools.buildDocxFromCanvases(canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-certificates.docx',blob);}));
     tpl.addEventListener('click',()=>documentExportButton(tpl,progress,(report)=>downloadFilledTemplateDocs('certificate',report)));
+    dummy.addEventListener('click',()=>documentExportButton(dummy,progress,async(report)=>{report(8,'Building dummy certificate');const base=dummyCertificatePerson();const person=Object.assign({},base,{__presentation:presentationForPerson(base)});const v=await documentVisualsWithImages();report(32,'Rendering dummy certificate');const canvas=window.DocumentTools.renderCertificatePages([person],options(),v)[0];const blob=await window.DocumentTools.buildPdfFromCanvases([canvas],(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-certificate-test-page.pdf',blob);log('info','documents.dummy_certificate_exported',{name:person['First Name']+' '+person['Last Name']});}));
     updateExportMeta();refresh();return panel;
   }
 
-  async function documentExportButton(btn,progress,fn){const old=btn.textContent;btn.disabled=true;progress.reset();const report=(value,label)=>progress.set(value,label);try{report(1,'Preparing '+old.toLowerCase());await nextPaint();await fn(report);progress.done('Export ready');log('info','documents.exported',{type:old});}catch(error){progress.error('Generation failed');log('error','documents.export_failed',{message:error.message});toast('Document export failed: '+error.message,'error');}finally{btn.disabled=false;btn.textContent=old;}}
+  async function documentExportButton(btn,progress,fn){const old=btn.textContent;btn.disabled=true;progress.reset();const report=(value,label)=>progress.set(value,label);try{report(1,'Preparing '+old.toLowerCase());await nextPaint();await fn(report);progress.done('Export ready');log('info','documents.exported',{type:old});}catch(error){const validation=error&&error.code==='DOCUMENT_VALIDATION';const message=error&&error.message?error.message:String(error||'Unknown document export error');if(validation){progress.reset();log('warn','documents.export_blocked',{type:old,message});toast(message,'warning');}else{progress.error('Generation failed');log('error','documents.export_failed',{type:old,message,name:error&&error.name||'Error',stack:error&&error.stack||''});toast('Document export failed: '+message,'error');}}finally{btn.disabled=false;btn.textContent=old;}}
 
   async function projectAssetAsPng(path){if(!path)return null;try{const url=assetPreviewUrl(path);if(!url)return null;const img=await loadImage(url);if(!img)return null;const c=document.createElement('canvas');const max=900,r=Math.min(1,max/Math.max(img.naturalWidth||1,img.naturalHeight||1));c.width=Math.max(1,Math.round((img.naturalWidth||600)*r));c.height=Math.max(1,Math.round((img.naturalHeight||300)*r));const ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(img,0,0,c.width,c.height);return await new Promise((resolve)=>c.toBlob(resolve,'image/png'));}catch(_){return null;}}
 
   async function loadBundledTemplate(kind){const path=kind==='badge'?'templates/badges_template.docx':'templates/certificate_template.docx';if(location.protocol==='file:')throw new Error('Filled template DOCX export needs the editor served over local HTTP. A4 DOCX/PDF export works without it.');const response=await fetch(path);if(!response.ok)throw new Error('Could not load '+path);return response.blob();}
-  function templateReplacements(kind,p){const v=conferenceVisuals(),pres=presentationForPerson(p)||{},presentationLine=pres.title?(pres.label||'Presentation'):'';const sig=Array.isArray(v.signatures)?v.signatures:[];const s1=sig[0]||{},s2=sig[1]||{},s3=sig[2]||{},s4=sig[3]||{};return {DOC_SURNAME:p['Last Name']||'',DOC_NAME:p['First Name']||'',DOC_CONF_SHORT:v.shortName,DOC_CONF_FULL:v.fullName,DOC_LOCATION:kind==='badge'?(v.badgeLocation||''):v.location,DOC_DATE_RANGE:v.date,DOC_DATE:v.date,DOC_ROLE:String(p.Category||p.Role||'').split(/[;,|]/)[0].trim(),AFFILIATION_:p.Affiliation||'',COUNTRY_:p.Country||'',DOC_PRESENTATION_LINE:presentationLine,DOC_PRESENTED_PREFIX:presentationLine,DOC_PRESENTATION_TYPE:pres.type||'',DOC_ABSTRACT_TITLE:pres.title||'',DOC_ORGANIZER_ADDRESS:v.organizerAddress||'',DOC_PHONE:v.phone||'',DOC_EMAIL:v.email||'',DOC_SIGN_1_TITLE:s1.title||'',DOC_SIGN_1_NAME:s1.name||'',DOC_SIGN_1_AFF:s1.affiliation||'',DOC_SIGN_2_TITLE:s2.title||'',DOC_SIGN_2_NAME:s2.name||'',DOC_SIGN_2_AFF:s2.affiliation||'',DOC_SIGN_3_TITLE:s3.title||'',DOC_SIGN_3_NAME:s3.name||'',DOC_SIGN_3_AFF:s3.affiliation||'',DOC_SIGN_4_TITLE:s4.title||'',DOC_SIGN_4_NAME:s4.name||'',DOC_SIGN_4_AFF:s4.affiliation||'',DOC_CHAIR_LEFT:s1.name||'',DOC_CHAIR_LEFT_AFF:s1.affiliation||'',DOC_CHAIR_RIGHT:s2.name||'',DOC_CHAIR_RIGHT_AFF:s2.affiliation||''};}
-  async function downloadFilledTemplateDocs(kind,report){const setKind=kind==='badge'?'badges':'certificates',people=selectedPeople(setKind);if(!people.length)throw new Error('Select at least one person for export.');report=typeof report==='function'?report:()=>{};report(6,'Loading DOCX template');const template=await loadBundledTemplate(kind),entries=[],v=conferenceVisuals(),media={};report(14,'Loading logos');const org=await projectAssetAsPng(v.organizerPath);const second=await projectAssetAsPng(kind==='certificate'?v.certificateCenterPath:v.confPath);const third=kind==='certificate'?await projectAssetAsPng(v.certificateStampPath):await projectAssetAsPng(v.badgeFooterPath);if(org)media['word/media/image1.png']=org;if(second)media['word/media/image2.png']=second;if(third)media['word/media/image3.png']=third;for(let i=0;i<people.length;i++){const p=people[i],blob=await window.DocumentTools.fillDocxTemplate(template,templateReplacements(kind,p),media),name=slugify([p['Last Name'],p['First Name']].filter(Boolean).join('-'))||'person';entries.push({path:name+'.docx',data:blob});report(18+((i+1)/people.length)*68,'Creating DOCX '+(i+1)+' / '+people.length);await nextPaint();}report(90,entries.length===1?'Preparing DOCX':'Packing DOCX archive');if(entries.length===1)downloadBlob(entries[0].path,entries[0].data);else downloadBlob((state.projectName||'conference')+'-'+setKind+'-template-docx.zip',await window.ZipLite.createBlob(entries));report(100,'DOCX ready');log('info','documents.template_docx_exported',{kind,count:entries.length});}
+  function templateReplacements(kind,p){const v=conferenceVisuals(),pres=presentationForPerson(p)||{},presentationLine=pres.title?(pres.label||'Presentation'):'';const sig=Array.isArray(v.signatures)?v.signatures:[];const s1=sig[0]||{},s2=sig[1]||{},s3=sig[2]||{},s4=sig[3]||{};return {DOC_SURNAME:p['Last Name']||'',DOC_NAME:p['First Name']||'',DOC_CONF_SHORT:kind==='badge'?(v.badgeName||v.shortName):v.shortName,DOC_CONF_FULL:v.fullName,DOC_LOCATION:kind==='badge'?(v.badgeLocation||''):v.location,DOC_DATE_RANGE:v.date,DOC_DATE:v.date,DOC_ROLE:String(p.Category||p.Role||'').split(/[;,|]/)[0].trim(),AFFILIATION_:p.Affiliation||'',COUNTRY_:p.Country||'',DOC_PRESENTATION_LINE:presentationLine,DOC_PRESENTED_PREFIX:presentationLine,DOC_PRESENTATION_TYPE:pres.type||'',DOC_ABSTRACT_TITLE:pres.title||'',DOC_ORGANIZER_ADDRESS:v.organizerAddress||'',DOC_PHONE:v.phone||'',DOC_EMAIL:v.email||'',DOC_SIGN_1_TITLE:s1.title||'',DOC_SIGN_1_NAME:s1.name||'',DOC_SIGN_1_AFF:s1.affiliation||'',DOC_SIGN_2_TITLE:s2.title||'',DOC_SIGN_2_NAME:s2.name||'',DOC_SIGN_2_AFF:s2.affiliation||'',DOC_SIGN_3_TITLE:s3.title||'',DOC_SIGN_3_NAME:s3.name||'',DOC_SIGN_3_AFF:s3.affiliation||'',DOC_SIGN_4_TITLE:s4.title||'',DOC_SIGN_4_NAME:s4.name||'',DOC_SIGN_4_AFF:s4.affiliation||'',DOC_CHAIR_LEFT:s1.name||'',DOC_CHAIR_LEFT_AFF:s1.affiliation||'',DOC_CHAIR_RIGHT:s2.name||'',DOC_CHAIR_RIGHT_AFF:s2.affiliation||''};}
+  async function downloadFilledTemplateDocs(kind,report){const setKind=kind==='badge'?'badges':'certificates',people=selectedPeople(setKind);if(!people.length)throw documentValidation('Select at least one person for export.');report=typeof report==='function'?report:()=>{};report(6,'Loading DOCX template');const template=await loadBundledTemplate(kind),entries=[],v=conferenceVisuals(),media={};report(14,'Loading logos');const org=await projectAssetAsPng(v.organizerPath);const second=await projectAssetAsPng(kind==='certificate'?v.certificateCenterPath:v.confPath);const third=kind==='certificate'?await projectAssetAsPng(v.certificateStampPath):await projectAssetAsPng(v.badgeFooterPath);if(org)media['word/media/image1.png']=org;if(second)media['word/media/image2.png']=second;if(third)media['word/media/image3.png']=third;for(let i=0;i<people.length;i++){const p=people[i],blob=await window.DocumentTools.fillDocxTemplate(template,templateReplacements(kind,p),media),name=slugify([p['Last Name'],p['First Name']].filter(Boolean).join('-'))||'person';entries.push({path:name+'.docx',data:blob});report(18+((i+1)/people.length)*68,'Creating DOCX '+(i+1)+' / '+people.length);await nextPaint();}report(90,entries.length===1?'Preparing DOCX':'Packing DOCX archive');if(entries.length===1)downloadBlob(entries[0].path,entries[0].data);else downloadBlob((state.projectName||'conference')+'-'+setKind+'-template-docx.zip',await window.ZipLite.createBlob(entries));report(100,'DOCX ready');log('info','documents.template_docx_exported',{kind,count:entries.length});}
 
   function resolvePreviewProjectPath(basePath, value) {
     const raw=String(value||'').trim();
@@ -3410,7 +4162,7 @@
   }
 
   async function buildConferencePreviewUrl(pageFile) {
-    const entries=await collectProjectEntriesForExport();
+    const entries=await collectProjectEntriesForExport({includeDemo:true});
     const files=new Map(entries.map((entry)=>[normalizeProjectPath(entry.path),entry.data instanceof Blob?entry.data:new Blob([entry.data]) ]));
     const page=normalizeProjectPath(pageFile||'index.html');
     if(!files.has(page)) throw new Error('Preview page not found: '+page);

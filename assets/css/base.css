@@ -28,3 +28,4 @@ input[type=date]{color-scheme:dark}input[type=file]{padding:3px 5px;min-height:v
 select{color:var(--text)!important;-webkit-text-fill-color:var(--text);background-color:#11151a}
 select option,select optgroup{background:#11151a!important;color:#edf1f5!important;-webkit-text-fill-color:#edf1f5;color-scheme:dark}
 select:disabled{color:var(--dim)!important;-webkit-text-fill-color:var(--dim)}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}

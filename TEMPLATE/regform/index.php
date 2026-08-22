@@ -17,7 +17,7 @@ $fatalError = null;
 $settings = [];
 $storagePath = '';
 try {
-    $settings = load_settings(dirname(__DIR__) . '/conference.yaml');
+    $settings = load_settings(dirname(__DIR__) . '/conference.yaml', __DIR__ . '/settings.yaml');
     if (!bool_setting($settings['conference']['registration_visible'] ?? true, true)) {
         header('Location: ../registration-tbd.html', true, 302);
         exit;
@@ -66,11 +66,15 @@ if ($fatalError === null && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
 
         $maxUploadMb = max(1, min(20, (int)($settings['form']['max_upload_mb'] ?? 5)));
-        try {
-            $upload = validate_upload($_FILES, $maxUploadMb * 1024 * 1024);
-        } catch (DomainException $e) {
-            $errors['proof_of_payment'] = $e->getMessage();
-            throw new DomainException('Please correct the highlighted fields.');
+        $proofField = form_field_definition($settings, 'proof_of_payment');
+        $upload = null;
+        if ($proofField !== null) {
+            try {
+                $upload = validate_upload($_FILES, $maxUploadMb * 1024 * 1024);
+            } catch (DomainException $e) {
+                $errors['proof_of_payment'] = $e->getMessage();
+                throw new DomainException('Please correct the highlighted fields.');
+            }
         }
 
         $receiptId = make_receipt_id();
@@ -84,18 +88,22 @@ if ($fatalError === null && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $storedUpload = $upload;
         if (bool_setting($settings['storage']['persist_submissions'] ?? true, true)) {
             try {
-                $storedUpload = store_proof_of_payment($storagePath, $upload, $receiptId);
+                if (is_array($upload)) {
+                    $storedUpload = store_proof_of_payment($storagePath, $upload, $receiptId);
+                }
                 $record = $values;
                 $record['receipt_id'] = $receiptId;
                 $record['submitted_at'] = gmdate(DATE_ATOM);
-                $record['proof_file'] = (string)$storedUpload['stored_filename'];
-                $record['proof_type'] = (string)$storedUpload['label'];
-                $record['proof_size_bytes'] = (int)$storedUpload['size'];
-                $record['privacy_accepted'] = true;
+                if (is_array($storedUpload)) {
+                    $record['proof_file'] = (string)$storedUpload['stored_filename'];
+                    $record['proof_type'] = (string)$storedUpload['label'];
+                    $record['proof_size_bytes'] = (int)$storedUpload['size'];
+                }
+                $record['privacy_accepted'] = !empty($values['privacy_acceptance']);
                 unset($record['privacy_acceptance']);
                 persist_submission_csv($storagePath, $record);
             } catch (Throwable $e) {
-                if (!empty($storedUpload['stored_path']) && is_file((string)$storedUpload['stored_path'])) {
+                if (is_array($storedUpload) && !empty($storedUpload['stored_path']) && is_file((string)$storedUpload['stored_path'])) {
                     @unlink((string)$storedUpload['stored_path']);
                 }
                 error_log('[MIFP registration][' . $receiptId . '] persistence failed: ' . $e->getMessage());
@@ -103,21 +111,35 @@ if ($fatalError === null && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
         }
 
-        $adminNote = 'Proof of payment is attached and has also been saved with the registration record.';
+        $adminNote = is_array($storedUpload)
+            ? 'Proof of payment is attached and has also been saved with the registration record.'
+            : 'The registration has been saved with the registration record.';
         $adminHtml = email_html($event, 'New registration', $receiptId, $values, $adminNote);
         $adminText = email_text($event, 'New registration', $receiptId, $values, $adminNote);
         $adminMailOk = false;
         try {
-            $adminMailOk = send_admin_mail_with_attachment(
-                $adminRecipients,
-                trim($prefix . ' ' . $event . ' - New registration - ' . $receiptId),
-                $adminHtml,
-                $adminText,
-                $settings['mail'],
-                $values['email'],
-                $storedUpload,
-                $receiptId
-            );
+            $subject = trim($prefix . ' ' . $event . ' - New registration - ' . $receiptId);
+            if (is_array($storedUpload)) {
+                $adminMailOk = send_admin_mail_with_attachment(
+                    $adminRecipients,
+                    $subject,
+                    $adminHtml,
+                    $adminText,
+                    $settings['mail'],
+                    (string)$values['email'],
+                    $storedUpload,
+                    $receiptId
+                );
+            } else {
+                $adminMailOk = send_simple_html_mail(
+                    $adminRecipients,
+                    $subject,
+                    $adminHtml,
+                    $adminText,
+                    $settings['mail'],
+                    (string)$values['email']
+                );
+            }
         } catch (Throwable $e) {
             error_log('[MIFP registration][' . $receiptId . '] organizer email error: ' . $e->getMessage());
         }
@@ -170,6 +192,7 @@ $conference = $settings['conference'] ?? [];
 $form = $settings['form'] ?? [];
 $content = $settings['content'] ?? [];
 $registrationOpen = $fatalError === null && bool_setting($conference['registration_open'] ?? false);
+$formSections = is_array($settings['form_sections'] ?? null) ? $settings['form_sections'] : [];
 $tshirtEnabled = bool_setting($form['tshirt_enabled'] ?? true, true);
 $maxUploadMb = max(1, min(20, (int)($form['max_upload_mb'] ?? 5)));
 $event = (string)($conference['event'] ?? 'MIFP Conference');
@@ -180,6 +203,9 @@ $paymentUrl = trim((string)($payment['url'] ?? ''));
 if (!filter_var($paymentUrl, FILTER_VALIDATE_URL) || strtolower((string)parse_url($paymentUrl, PHP_URL_SCHEME)) !== 'https') {
     $paymentUrl = '';
 }
+$branding = is_array($settings['branding'] ?? null) ? $settings['branding'] : [];
+$conferenceLogo = regform_asset_url($branding['conference_logo'] ?? '', 'assets/conference-logo.svg');
+$organizerLogo = regform_asset_url($branding['organizer_logo'] ?? '', 'assets/mifp-logo.png');
 $clientConfig = [
     'appearance' => $settings['appearance'] ?? [],
     'runtime' => $settings['runtime'] ?? [],
@@ -205,19 +231,28 @@ function selected_value(string $name, string $option, array $values): string
     return hash_equals($value, $option) ? ' selected' : '';
 }
 
+function regform_asset_url($value, string $fallback): string
+{
+    $path = trim((string)$value);
+    if ($path === '' || mifp_str_contains($path, '..') || mifp_str_contains($path, '\\') || preg_match('/^[A-Za-z][A-Za-z0-9+.-]*:/', $path) === 1 || mifp_str_starts_with($path, '/')) {
+        return $fallback;
+    }
+    return '../' . ltrim($path, '/');
+}
+
 function css_identifier(string $value): string
 {
     $safe = preg_replace('/[^A-Za-z0-9_-]/', '', $value) ?? '';
     return $safe !== '' ? $safe : 'default';
 }
 
-function css_color(mixed $value): string
+function css_color($value): string
 {
     $color = trim((string)$value);
     return preg_match('/^#[0-9A-Fa-f]{6}$/', $color) === 1 ? $color : '';
 }
 
-function css_dimension(mixed $value, string $fallback): string
+function css_dimension($value, string $fallback): string
 {
     $raw = trim((string)$value);
     if (preg_match('/^\d+(?:\.\d+)?(?:px|rem|em|%)$/i', $raw) === 1) return $raw;
@@ -260,6 +295,12 @@ function build_appearance_css(array $appearance): string
         // Palette secondary colors are sometimes intentionally dark (for example MIFP navy).
         // Use a theme-aware text token so those accents never become unreadable on dark surfaces.
         $vars[] = '--secondary-ink:' . ($scheme === 'dark' ? 'var(--heading)' : 'var(--secondary)');
+        // Keep the brand accent unchanged for solid controls, but use a lighter accent
+        // when the same palette color is rendered as small text on dark themes.
+        $vars[] = '--primary-ink:' . ($scheme === 'dark' ? 'color-mix(in srgb,var(--primary) 60%,#ffffff)' : 'color-mix(in srgb,var(--primary) 52%,var(--heading))');
+        $vars[] = '--danger-ink:' . ($scheme === 'dark' ? 'color-mix(in srgb,var(--danger) 60%,#ffffff)' : 'var(--danger)');
+        $vars[] = '--warning-ink:' . ($scheme === 'dark' ? 'color-mix(in srgb,var(--warning) 60%,#ffffff)' : 'var(--warning)');
+        $vars[] = '--success-ink:' . ($scheme === 'dark' ? 'color-mix(in srgb,var(--success) 60%,#ffffff)' : 'var(--success)');
         if ($vars !== []) $rules[] = 'html.mifp-theme-' . $id . '{' . implode(';', $vars) . '}';
     }
     foreach (($appearance['palettes'] ?? []) as $palette) {
@@ -288,16 +329,16 @@ $clientConfigJson = json_encode($clientConfig, JSON_UNESCAPED_UNICODE | JSON_UNE
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="robots" content="noindex,nofollow,noarchive">
 <title><?= h($event) ?> | Registration</title>
-<link rel="stylesheet" href="assets/styles.css">
+<link rel="stylesheet" href="assets/styles.css?v=<?= h((string)(@filemtime(__DIR__ . '/assets/styles.css') ?: '1')) ?>">
 <style nonce="<?= h($styleNonce) ?>"><?= $appearanceCss ?></style>
-<script src="assets/form.js" defer></script>
+<script src="assets/form.js?v=<?= h((string)(@filemtime(__DIR__ . '/assets/form.js') ?: '1')) ?>" defer></script>
 </head>
 <body data-reg-config="<?= h($clientConfigJson) ?>">
 <a class="skip-link" href="#main-content">Skip to main content</a>
 <header class="topbar">
     <div class="topbar-inner">
         <a class="brand" href="<?= h((string)($conference['back_url'] ?? '../registration.html')) ?>" aria-label="Back to conference registration information">
-            <img src="assets/conference-logo.svg" alt="<?= h($event) ?>">
+            <img src="<?= h($conferenceLogo) ?>" alt="<?= h($event) ?>">
             <span><strong><?= h($event) ?></strong><small>Registration</small></span>
         </a>
         <a class="back-link" href="<?= h((string)($conference['back_url'] ?? '../registration.html')) ?>">Back to conference site</a>
@@ -315,7 +356,7 @@ $clientConfigJson = json_encode($clientConfig, JSON_UNESCAPED_UNICODE | JSON_UNE
                 <span><?= h((string)($conference['location'] ?? '')) ?></span>
             </div>
         </div>
-        <img class="mifp-mark" src="assets/mifp-logo.png" alt="MIFP">
+        <img class="mifp-mark" src="<?= h($organizerLogo) ?>" alt="MIFP">
     </section>
 
     <?php if ($fatalError !== null): ?>
@@ -441,127 +482,95 @@ $clientConfigJson = json_encode($clientConfig, JSON_UNESCAPED_UNICODE | JSON_UNE
                     <p><?= h((string)($form['required_note'] ?? 'Fields marked with * are required.')) ?></p>
                 </div>
 
-                <fieldset <?= $registrationOpen ? '' : 'disabled' ?>>
-                    <legend>Personal data</legend>
-                    <div class="field-grid">
-                        <label class="field">
-                            <span>First name <b>*</b></span>
-                            <input type="text" name="first_name" maxlength="100" autocomplete="given-name" required value="<?= old_value('first_name', $values) ?>" aria-invalid="<?= isset($errors['first_name']) ? 'true' : 'false' ?>">
-                            <?php if (isset($errors['first_name'])): ?><small class="field-error"><?= h($errors['first_name']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field">
-                            <span>Last name <b>*</b></span>
-                            <input type="text" name="last_name" maxlength="100" autocomplete="family-name" required value="<?= old_value('last_name', $values) ?>" aria-invalid="<?= isset($errors['last_name']) ? 'true' : 'false' ?>">
-                            <?php if (isset($errors['last_name'])): ?><small class="field-error"><?= h($errors['last_name']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field">
-                            <span>Email <b>*</b></span>
-                            <input type="email" name="email" maxlength="254" autocomplete="email" inputmode="email" required value="<?= old_value('email', $values) ?>" aria-invalid="<?= isset($errors['email']) ? 'true' : 'false' ?>">
-                            <?php if (isset($errors['email'])): ?><small class="field-error"><?= h($errors['email']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field">
-                            <span>Affiliation / Institution / Company <b>*</b></span>
-                            <input type="text" name="affiliation" maxlength="180" autocomplete="organization" required value="<?= old_value('affiliation', $values) ?>" aria-invalid="<?= isset($errors['affiliation']) ? 'true' : 'false' ?>">
-                            <?php if (isset($errors['affiliation'])): ?><small class="field-error"><?= h($errors['affiliation']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field">
-                            <span>Country <b>*</b></span>
-                            <input type="text" name="country" maxlength="100" autocomplete="country-name" required value="<?= old_value('country', $values) ?>" aria-invalid="<?= isset($errors['country']) ? 'true' : 'false' ?>">
-                            <?php if (isset($errors['country'])): ?><small class="field-error"><?= h($errors['country']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field field-wide">
-                            <span>Full address <b>*</b></span>
-                            <textarea name="address" maxlength="350" rows="3" autocomplete="street-address" required aria-invalid="<?= isset($errors['address']) ? 'true' : 'false' ?>"><?= old_value('address', $values) ?></textarea>
-                            <?php if (isset($errors['address'])): ?><small class="field-error"><?= h($errors['address']) ?></small><?php endif; ?>
-                        </label>
-                    </div>
-                </fieldset>
-
-                <fieldset <?= $registrationOpen ? '' : 'disabled' ?>>
-                    <legend>Travel & participation</legend>
-                    <div class="field-grid">
-                        <label class="field">
-                            <span>Arrival date <b>*</b></span>
-                            <input type="date" name="arrival_date" required value="<?= old_value('arrival_date', $values) ?>" aria-invalid="<?= isset($errors['arrival_date']) ? 'true' : 'false' ?>">
-                            <?php if (isset($errors['arrival_date'])): ?><small class="field-error"><?= h($errors['arrival_date']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field">
-                            <span>Departure date <b>*</b></span>
-                            <input type="date" name="departure_date" required value="<?= old_value('departure_date', $values) ?>" aria-invalid="<?= isset($errors['departure_date']) ? 'true' : 'false' ?>">
-                            <?php if (isset($errors['departure_date'])): ?><small class="field-error"><?= h($errors['departure_date']) ?></small><?php endif; ?>
-                        </label>
-                        <?php if ($tshirtEnabled): ?>
-                        <label class="field">
-                            <span>Event T-shirt size <b>*</b></span>
-                            <select name="tshirt_size" required aria-invalid="<?= isset($errors['tshirt_size']) ? 'true' : 'false' ?>">
-                                <option value="">Select size</option>
-                                <?php foreach (($settings['tshirt_sizes'] ?? []) as $size): ?>
-                                    <option value="<?= h((string)$size) ?>"<?= selected_value('tshirt_size', (string)$size, $values) ?>><?= h((string)$size) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                            <?php if (isset($errors['tshirt_size'])): ?><small class="field-error"><?= h($errors['tshirt_size']) ?></small><?php endif; ?>
-                        </label>
+                <?php foreach ($formSections as $section): ?>
+                    <?php
+                    if (!is_array($section) || !is_array($section['fields'] ?? null)) continue;
+                    $sectionId = trim((string)($section['id'] ?? 'section'));
+                    $sectionTitle = trim((string)($section['title'] ?? 'Registration details'));
+                    $visibleFields = [];
+                    foreach ($section['fields'] as $field) {
+                        if (!is_array($field)) continue;
+                        if ((string)($field['name'] ?? '') === 'tshirt_size' && !$tshirtEnabled) continue;
+                        $visibleFields[] = $field;
+                    }
+                    if ($visibleFields === []) continue;
+                    $privacySection = strtolower($sectionId) === 'privacy';
+                    ?>
+                    <fieldset class="<?= $privacySection ? 'privacy-fieldset' : '' ?>" <?= $registrationOpen ? '' : 'disabled' ?>>
+                        <legend><?= h($sectionTitle) ?></legend>
+                        <?php if ($privacySection && !empty($privacyNotice['text'])): ?>
+                            <div class="privacy-notice">
+                                <p><?= nl2br(h((string)$privacyNotice['text'])) ?></p>
+                            </div>
                         <?php endif; ?>
-                        <label class="field">
-                            <span>Dietary choice <b>*</b></span>
-                            <select name="dietary_choice" required aria-invalid="<?= isset($errors['dietary_choice']) ? 'true' : 'false' ?>">
-                                <option value="">Select option</option>
-                                <?php foreach ($settings['dietary_choices'] as $choice): ?>
-                                    <option value="<?= h((string)$choice) ?>"<?= selected_value('dietary_choice', (string)$choice, $values) ?>><?= h((string)$choice) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                            <?php if (isset($errors['dietary_choice'])): ?><small class="field-error"><?= h($errors['dietary_choice']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field field-wide">
-                            <span>Dietary notes</span>
-                            <textarea name="dietary_notes" maxlength="500" rows="3" placeholder="Allergies or other information the organizers should know"><?= old_value('dietary_notes', $values) ?></textarea>
-                        </label>
-                    </div>
-                </fieldset>
+                        <div class="field-grid">
+                            <?php foreach ($visibleFields as $field): ?>
+                                <?php
+                                $name = trim((string)($field['name'] ?? ''));
+                                if ($name === '' || preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $name) !== 1) continue;
+                                $type = strtolower(trim((string)($field['type'] ?? 'text')));
+                                if (!in_array($type, ['text', 'email', 'date', 'textarea', 'select', 'checkbox', 'file'], true)) $type = 'text';
+                                $label = trim((string)($field['label'] ?? $name));
+                                $required = bool_setting($field['required'] ?? false, false);
+                                $wide = bool_setting($field['full_width'] ?? false, false);
+                                $help = trim((string)($field['help'] ?? ''));
+                                $autocomplete = trim((string)($field['autocomplete'] ?? ''));
+                                $accept = trim((string)($field['accept'] ?? ''));
+                                $placeholder = trim((string)($field['placeholder'] ?? ''));
+                                $error = $errors[$name] ?? null;
+                                $isChecked = array_key_exists($name, $values) ? !empty($values[$name]) : ((string)($_POST[$name] ?? '') === '1');
+                                ?>
 
-                <fieldset <?= $registrationOpen ? '' : 'disabled' ?>>
-                    <legend>Payment data</legend>
-                    <div class="field-grid">
-                        <label class="field">
-                            <span>Registration type <b>*</b></span>
-                            <select name="registration_type" required aria-invalid="<?= isset($errors['registration_type']) ? 'true' : 'false' ?>">
-                                <option value="">Select category</option>
-                                <?php foreach ($settings['categories'] as $category): ?>
-                                    <option value="<?= h((string)$category) ?>"<?= selected_value('registration_type', (string)$category, $values) ?>><?= h((string)$category) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                            <?php if (isset($errors['registration_type'])): ?><small class="field-error"><?= h($errors['registration_type']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field">
-                            <span>Payment method <b>*</b></span>
-                            <select name="payment_method" required aria-invalid="<?= isset($errors['payment_method']) ? 'true' : 'false' ?>">
-                                <option value="">Select payment method</option>
-                                <?php foreach ($settings['payment_methods'] as $method): ?>
-                                    <option value="<?= h((string)$method) ?>"<?= selected_value('payment_method', (string)$method, $values) ?>><?= h((string)$method) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                            <?php if (isset($errors['payment_method'])): ?><small class="field-error"><?= h($errors['payment_method']) ?></small><?php endif; ?>
-                        </label>
-                        <label class="field field-wide file-field">
-                            <span>Proof of payment <b>*</b></span>
-                            <input type="file" name="proof_of_payment" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" required aria-invalid="<?= isset($errors['proof_of_payment']) ? 'true' : 'false' ?>">
-                            <small>PDF, JPEG or PNG · max <?= h((string)$maxUploadMb) ?> MB.</small>
-                            <?php if (isset($errors['proof_of_payment'])): ?><small class="field-error"><?= h($errors['proof_of_payment']) ?></small><?php endif; ?>
-                        </label>
-                    </div>
-                </fieldset>
+                                <?php if ($type === 'checkbox'): ?>
+                                    <label class="privacy-check <?= $wide ? 'field-wide' : '' ?>">
+                                        <input type="checkbox" name="<?= h($name) ?>" value="1" <?= $required ? 'required' : '' ?> <?= $isChecked ? 'checked' : '' ?> aria-invalid="<?= $error !== null ? 'true' : 'false' ?>">
+                                        <span>
+                                            <?= h($label) ?>
+                                            <?php if (!empty($field['link_label'])): ?>
+                                                <?php $linkHref = $name === 'privacy_acceptance' ? (string)($conference['privacy_url'] ?? '../privacy.html') : (string)($field['link_href'] ?? '#'); ?>
+                                                <a href="<?= h($linkHref) ?>" target="_blank" rel="noopener noreferrer"><?= h((string)$field['link_label']) ?></a>
+                                            <?php endif; ?>
+                                            <?= $required ? ' <b>*</b>' : '' ?>
+                                        </span>
+                                    </label>
+                                    <?php if ($error !== null): ?><small class="field-error privacy-error <?= $wide ? 'field-wide' : '' ?>"><?= h((string)$error) ?></small><?php endif; ?>
 
-                <fieldset class="privacy-fieldset" <?= $registrationOpen ? '' : 'disabled' ?>>
-                    <legend><?= h((string)($privacyNotice['title'] ?? 'Privacy')) ?></legend>
-                    <div class="privacy-notice">
-                        <p><?= h((string)($privacyNotice['text'] ?? '')) ?></p>
-                    </div>
-                    <label class="privacy-check">
-                        <input type="checkbox" name="privacy_acceptance" value="1" required <?= (($_POST['privacy_acceptance'] ?? '') === '1') ? 'checked' : '' ?> aria-invalid="<?= isset($errors['privacy_acceptance']) ? 'true' : 'false' ?>">
-                        <span><?= h((string)($privacyNotice['checkbox_label'] ?? 'I have read the Privacy & Cookies Policy and accept the registration conditions.')) ?> <a href="<?= h((string)($conference['privacy_url'] ?? '../privacy.html')) ?>" target="_blank" rel="noopener noreferrer">Read Privacy & Cookies</a> <b>*</b></span>
-                    </label>
-                    <?php if (isset($errors['privacy_acceptance'])): ?><small class="field-error privacy-error"><?= h($errors['privacy_acceptance']) ?></small><?php endif; ?>
-                </fieldset>
+                                <?php else: ?>
+                                    <label class="field <?= $wide ? 'field-wide' : '' ?> <?= $type === 'file' ? 'file-field' : '' ?>">
+                                        <span><?= h($label) ?><?= $required ? ' <b>*</b>' : '' ?></span>
+
+                                        <?php if ($type === 'textarea'): ?>
+                                            <textarea name="<?= h($name) ?>" rows="3" <?= $required ? 'required' : '' ?> <?= $autocomplete !== '' ? 'autocomplete="' . h($autocomplete) . '"' : '' ?> <?= $placeholder !== '' ? 'placeholder="' . h($placeholder) . '"' : '' ?> aria-invalid="<?= $error !== null ? 'true' : 'false' ?>"><?= old_value($name, $values) ?></textarea>
+
+                                        <?php elseif ($type === 'select'): ?>
+                                            <select name="<?= h($name) ?>" <?= $required ? 'required' : '' ?> aria-invalid="<?= $error !== null ? 'true' : 'false' ?>">
+                                                <option value="">Select option</option>
+                                                <?php foreach (($field['options'] ?? []) as $option): ?>
+                                                    <?php
+                                                    $optionValue = is_array($option) ? (string)($option['value'] ?? $option['label'] ?? '') : (string)$option;
+                                                    $optionLabel = is_array($option) ? (string)($option['label'] ?? $option['value'] ?? '') : (string)$option;
+                                                    if (trim($optionValue) === '') continue;
+                                                    ?>
+                                                    <option value="<?= h($optionValue) ?>"<?= selected_value($name, $optionValue, $values) ?>><?= h($optionLabel) ?></option>
+                                                <?php endforeach; ?>
+                                            </select>
+
+                                        <?php elseif ($type === 'file'): ?>
+                                            <input type="file" name="<?= h($name) ?>" <?= $required ? 'required' : '' ?> <?= $accept !== '' ? 'accept="' . h($accept) . '"' : '' ?> aria-invalid="<?= $error !== null ? 'true' : 'false' ?>">
+
+                                        <?php else: ?>
+                                            <input type="<?= h($type) ?>" name="<?= h($name) ?>" <?= $required ? 'required' : '' ?> <?= $autocomplete !== '' ? 'autocomplete="' . h($autocomplete) . '"' : '' ?> <?= $placeholder !== '' ? 'placeholder="' . h($placeholder) . '"' : '' ?> value="<?= old_value($name, $values) ?>" aria-invalid="<?= $error !== null ? 'true' : 'false' ?>">
+                                        <?php endif; ?>
+
+                                        <?php if ($help !== ''): ?><small><?= h($help) ?></small><?php endif; ?>
+                                        <?php if ($type === 'file' && $name === 'proof_of_payment' && $help === ''): ?><small>PDF, JPEG or PNG · max <?= h((string)$maxUploadMb) ?> MB.</small><?php endif; ?>
+                                        <?php if ($error !== null): ?><small class="field-error"><?= h((string)$error) ?></small><?php endif; ?>
+                                    </label>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </div>
+                    </fieldset>
+                <?php endforeach; ?>
 
                 <div class="submit-row">
                     <div>

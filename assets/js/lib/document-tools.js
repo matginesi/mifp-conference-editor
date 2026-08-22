@@ -70,7 +70,7 @@
     const pad=Math.max(3*s,m*.046),topY=Y+pad,topH=H*.18;
     drawImageContain(ctx,v.organizerLogo,X+pad,topY,W*.30,topH);
     drawImageContain(ctx,v.conferenceLogo,X+W*.355,topY,W*.29,topH);
-    const short=String(v.shortName||'');
+    const short=String(v.badgeName||v.shortName||'');
     const shortTop=fontFit(ctx,short,W*.28,Math.round(m*.064),Math.round(m*.038),'800',FONT_SANS);
     centerText(ctx,short,X+W*.68,Y+H*.092,W*.27,shortTop,'800','#111315',FONT_SANS);
     const confSize=fontFit(ctx,short,W-pad*2,Math.round(m*.070),Math.round(m*.046),'800',FONT_SANS);

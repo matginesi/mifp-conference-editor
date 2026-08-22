@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.6.4';
+  const VERSION = '1.6.8';
   const SCRIPT_URL = document.currentScript && document.currentScript.src
     ? new URL(document.currentScript.src)
     : new URL('js/site.js', document.baseURI);
@@ -215,7 +215,17 @@
       '--heading': theme.text_heading
     };
     Object.entries(map).forEach(([key, value]) => value && root.style.setProperty(key, value));
-    root.style.colorScheme = theme.color_scheme || 'dark';
+    const scheme = String(theme.color_scheme || 'dark').toLowerCase() === 'light' ? 'light' : 'dark';
+    root.style.colorScheme = scheme;
+    // Solid controls keep the exact brand color; small accent text gets a
+    // contrast-safe variant on dark themes. The expression still follows
+    // the currently selected palette because it references --primary.
+    root.style.setProperty('--primary-ink', scheme === 'dark'
+      ? 'color-mix(in srgb, var(--primary) 60%, #ffffff)'
+      : 'color-mix(in srgb, var(--primary) 52%, var(--heading))');
+    root.style.setProperty('--danger-ink', scheme === 'dark'
+      ? 'color-mix(in srgb, var(--danger) 60%, #ffffff)'
+      : 'var(--danger)');
     root.dataset.theme = theme.id;
     if (remember && get('runtime.debug', false) === true && get('appearance.remember_preferences', true) !== false) localStorage.setItem('mifp-debug-theme', theme.id);
     log('debug', 'appearance', 'Theme applied', { id: theme.id });
@@ -322,8 +332,7 @@
 
   function registrationActiveUrl() {
     const c = get('registration', {});
-    const formConfig = c.form || {};
-    return c.registration_url || formConfig.action || get('conference.registration_url', '') || 'registration.html';
+    return c.registration_url || get('conference.registration_url', '') || 'regform/';
   }
 
   function normalizeLocalHref(value) {
@@ -335,7 +344,6 @@
     const known = [
       'registration.html',
       registrationActiveUrl(),
-      get('registration.form.action', ''),
       get('registration.registration_url', ''),
       get('conference.registration_url', '')
     ].map(normalizeLocalHref).filter(Boolean);
@@ -883,32 +891,22 @@
 
   function renderRegistrationForm(root) {
     if (!setEnabled(root, 'registration')) return;
-    const c = get('registration.form', {});
-    if (c.enabled === false) { root.hidden = true; return; }
+    const c = get('registration', {});
     root.hidden = false;
 
-    const action = configuredLink(c.action || '');
-    const submitEnabled = c.submit_enabled === true && Boolean(action);
-    const mode = str(c.mode, 'static').toLowerCase();
+    // The public site deliberately knows nothing about regform/settings.yaml.
+    // It only links to the isolated PHP module; opening/closing submissions and
+    // every form/backend/mail option are handled server-side by regform itself.
+    const action = configuredLink(c.registration_url || 'regform/');
+    const buttonLabel = displayValue(c.registration_button_label || 'Open registration form');
+    const label = displayValue(c.label || 'Registration');
+    const title = displayValue(c.title || 'Registration');
+    const intro = c.intro ? `<p class="lead-copy">${esc(displayValue(c.intro))}</p>` : '';
+    const launch = action
+      ? `<a class="btn btn-primary" href="${esc(action)}">${esc(buttonLabel)}</a>`
+      : `<button class="btn btn-primary" type="button" disabled aria-disabled="true">Registration unavailable</button>`;
 
-    if (mode === 'php') {
-      root.innerHTML = `<div class="registration-form-head"><div><div class="section-kicker">${esc(displayValue(c.label || 'Online registration'))}</div><h2>${esc(displayValue(c.title || 'Registration Form'))}</h2>${c.intro ? `<p class="lead-copy">${esc(displayValue(c.intro))}</p>` : ''}</div></div><div class="registration-php-launch">${submitEnabled ? `<a class="btn btn-primary" href="${esc(action)}">${esc(displayValue(c.submit_label || 'Open registration form'))}</a>` : `<button class="btn btn-primary" type="button" disabled aria-disabled="true">${esc(displayValue(c.unavailable_label || 'Registration opens · TBC'))}</button>`}<p class="fine-print">${esc(displayValue(submitEnabled ? 'Open the secure online registration form to enter participant details and attach proof of payment.' : (c.closed_message || 'Online registration is not currently available.')))}</p></div>`;
-      return;
-    }
-    const method = str(c.method, 'post').toLowerCase() === 'get' ? 'get' : 'post';
-    const enctype = str(c.enctype, 'multipart/form-data');
-    const sections = arr(c.sections).map((section) => {
-      const fields = arr(section.fields).map(registrationFieldHtml).join('');
-      if (!fields) return '';
-      return `<fieldset class="registration-form-group"><legend>${esc(displayValue(section.title || section.id))}</legend><div class="registration-form-grid">${fields}</div></fieldset>`;
-    }).join('');
-
-    root.innerHTML = `<div class="registration-form-head"><div><div class="section-kicker">${esc(displayValue(c.label || 'Online registration'))}</div><h2>${esc(displayValue(c.title || 'Registration Form'))}</h2>${c.intro ? `<p class="lead-copy">${esc(displayValue(c.intro))}</p>` : ''}</div>${c.required_note ? `<small>${esc(displayValue(c.required_note))}</small>` : ''}</div><form class="registration-form"${action ? ` action="${esc(action)}"` : ''} method="${method}" enctype="${esc(enctype)}">${sections}<div class="registration-form-submit"><button class="btn btn-primary" type="submit"${submitEnabled ? '' : ' disabled aria-disabled="true"'}>${esc(displayValue(submitEnabled ? (c.submit_label || 'Registration') : (c.unavailable_label || 'Registration opens · TBC')))}</button></div></form>`;
-
-    if (!submitEnabled) {
-      q('form', root)?.addEventListener('submit', (event) => event.preventDefault());
-      log('info', 'registration', 'Registration form rendered in preview mode', { action: action || 'TBC' });
-    }
+    root.innerHTML = `<div class="registration-form-head"><div><div class="section-kicker">${esc(label)}</div><h2>${esc(title)}</h2>${intro}</div></div><div class="registration-php-launch">${launch}<p class="fine-print">The secure registration module manages form availability, validation, email delivery and uploads separately from the public conference configuration.</p></div>`;
   }
 
   function renderHomeVenue(root) {
@@ -934,7 +932,10 @@
     const c = get('home_speakers', {});
     const invited = visiblePeople().filter((p) => hasRole(p, 'Invited Speaker')).slice(0, 4);
     const href = safeLink(c.button_href || 'speakers.html');
-    root.innerHTML = `<div class="section-kicker">${esc(c.label || 'Speakers')}</div><h2>${esc(c.title || 'Invited Speakers')}</h2>${c.intro?`<p class="lead-copy">${esc(c.intro)}</p>`:''}${invited.length?`<div class="speaker-grid home-speaker-grid">${invited.map((p)=>personCard(p,false)).join('')}</div>`:''}<div class="button-row"><a class="btn btn-outline btn-sm" href="${esc(href)}">${esc(c.button_label || 'View invited speakers')}</a></div>`;
+    const content = invited.length
+      ? `<div class="speaker-grid home-speaker-grid">${invited.map((p)=>personCard(p,false)).join('')}</div>`
+      : `<section class="people-tbc home-speaker-tbc" aria-label="Invited speakers to be confirmed"><div class="people-tbc-copy"><div class="section-kicker">Programme update</div><h3>Invited speakers to be confirmed</h3><p>The invited-speaker line-up is currently being finalised. Confirmed names and affiliations will appear here as soon as they are available.</p></div><div class="people-tbc-mark" aria-hidden="true">TBC</div></section>`;
+    root.innerHTML = `<div class="section-kicker">${esc(c.label || 'Speakers')}</div><h2>${esc(c.title || 'Invited Speakers')}</h2>${c.intro?`<p class="lead-copy">${esc(c.intro)}</p>`:''}${content}<div class="button-row"><a class="btn btn-outline btn-sm" href="${esc(href)}">${esc(c.button_label || 'View invited speakers')}</a></div>`;
   }
 
   function renderHomeVenueAccommodation(root) {
@@ -1019,11 +1020,14 @@
     const c = get('people', {});
     const people = visiblePeople();
     const groups = arr(c.groups).filter((group) => group.enabled !== false);
-    root.innerHTML = `<div class="page-head"><div class="section-kicker">${esc(c.page_label || 'People')}</div><h1>${esc(c.page_title || 'Conference People')}</h1>${c.filter_enabled !== false ? `<input class="people-search" id="peopleSearch" type="search" placeholder="${esc(c.search_placeholder || 'Search people…')}">` : ''}</div><div id="peopleGroups">${groups.map((group) => {
-      const members = people.filter((p) => hasRole(p, group.role));
+    const grouped = groups.map((group) => ({ group, members: people.filter((p) => hasRole(p, group.role)) }));
+    const hasPublishedPeople = grouped.some((item) => item.members.length);
+    const search = hasPublishedPeople && c.filter_enabled !== false ? `<input class="people-search" id="peopleSearch" type="search" placeholder="${esc(c.search_placeholder || 'Search people…')}">` : '';
+    const tbc = `<section class="people-tbc" aria-label="Speakers to be confirmed"><div class="people-tbc-copy"><div class="section-kicker">Programme update</div><h2>Speakers to be confirmed</h2><p>The invited speakers and committee details are currently being finalised. Confirmed names and affiliations will be published here as soon as they are available.</p></div><div class="people-tbc-mark" aria-hidden="true">TBC</div></section>`;
+    root.innerHTML = `<div class="page-head"><div class="section-kicker">${esc(c.page_label || 'People')}</div><h1>${esc(c.page_title || 'Conference People')}</h1>${search}</div><div id="peopleGroups">${hasPublishedPeople ? grouped.map(({group,members}) => {
       if (!members.length && c.show_empty_groups !== true) return '';
       return `<section class="section people-group"><div class="section-kicker">${esc(group.role)}</div><h2>${esc(group.title)}</h2><div class="${group.style === 'cards' ? 'speaker-grid' : 'people-list'}">${members.map((p) => personCard(p, group.style !== 'cards')).join('')}</div></section>`;
-    }).join('')}</div>`;
+    }).join('') : tbc}</div>`;
     const input = q('#peopleSearch', root);
     if (input) input.addEventListener('input', () => {
       const term = input.value.trim().toLowerCase();
@@ -1251,12 +1255,20 @@
       return;
     }
     const samplePerson=visiblePeople()[0];
-    root.innerHTML=`<div class="page-head"><div class="section-kicker">Debug reference</div><h1>Conference UI Kit</h1><p>Live catalogue of the same tokens and components used by the conference pages.</p></div>
+    const venueGallery=arr(get('venue.images',[]));
+    const accommodationGallery=arr(get('accommodation.images',[]));
+    const homeVenueGallery=arr(get('home.venue.images',[]));
+    const sampleGallery=venueGallery.length?venueGallery:(accommodationGallery.length?accommodationGallery:homeVenueGallery);
+    const gallery=sampleGallery.length?galleryWidget(sampleGallery.slice(0,5),{label:'UI Kit media gallery',variant:'wide'}):'<article class="info-card"><h3>Media gallery</h3><p>Add images to Venue or Accommodation to preview the production gallery component here.</p></article>';
+    const tbcState=`<section class="people-tbc" aria-label="Speakers to be confirmed"><div class="people-tbc-copy"><div class="section-kicker">Programme update</div><h2>Speakers to be confirmed</h2><p>The invited speakers and committee details are currently being finalised. Confirmed names and affiliations will be published here as soon as they are available.</p></div><div class="people-tbc-mark" aria-hidden="true">TBC</div></section>`;
+    root.innerHTML=`<div class="page-head"><div class="section-kicker">Debug reference</div><h1>Conference UI Kit</h1><p>Living catalogue of the production tokens, states and components used by the conference pages. Change theme or palette in Debug to audit every component together.</p></div>
       <section class="section ui-kit-section"><div class="section-kicker">Foundation</div><h2>Typography & colours</h2><div class="ui-swatch-grid">${['bg','bg-alt','card','primary','secondary','text','muted','border'].map((name)=>`<div class="ui-swatch" data-token="${esc(name)}"><i></i><span>--${esc(name)}</span></div>`).join('')}</div><div class="ui-type"><h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3><p>Body text uses the same typography and contrast as every conference page.</p><p class="fine-print">Fine print / secondary information.</p></div></section>
-      <section class="section ui-kit-section"><div class="section-kicker">Actions</div><h2>Buttons, badges & controls</h2><div class="button-row"><button class="btn btn-primary">Primary</button><button class="btn btn-outline">Outline</button><button class="btn btn-ghost">Ghost</button><span class="badge">Badge</span></div><div class="ui-control-grid"><label>Text input<input class="people-search" value="Example value"></label><label>Select<select><option>Option one</option><option>Option two</option></select></label></div></section>
-      <section class="section ui-kit-section"><div class="section-kicker">Surfaces</div><h2>Cards & information</h2><div class="three-grid"><article class="info-card"><h3>Information card</h3><p>Neutral reusable information surface.</p></article><article class="notice accent"><h3>Accent notice</h3><p>Important but non-destructive information.</p></article><article class="notice danger"><h3>Warning</h3><p>Warnings use the same shape and spacing.</p></article></div></section>
-      <section class="section ui-kit-section"><div class="section-kicker">Data</div><h2>People & programme</h2>${samplePerson?`<div class="ui-person-preview">${personCard(samplePerson,false)}</div>`:''}<article class="program-row"><time>09:00–10:30</time><div><span class="badge">Session</span><h3>Scientific session · TBC</h3><p class="speaker-line"><strong>First Name Last Name</strong> · Affiliation</p><div class="talk-list"><div class="talk"><time>09:00</time><div><strong>Talk title · TBC</strong><span>First Name Last Name · Affiliation</span></div></div></div></div></article></section>
-      <section class="section ui-kit-section"><div class="section-kicker">Registration</div><h2>Pricing & deadlines</h2><div class="registration-head"><div><p class="lead-copy">Registration cards use the same components as the homepage.</p></div><div class="early-bird-box"><span>Early bird deadline</span><strong>TBC</strong><small>Regular fees: TBC</small></div></div><div class="pricing-grid"><article class="price-card"><div class="price-name">Participant</div><div class="price-period">Early bird · TBC</div><div class="price">TBC</div><div class="late"><span>Regular fee</span><strong>TBC</strong></div><ul><li>Included services: TBC</li></ul><button class="btn btn-primary">Choose this plan</button></article></div></section>
+      <section class="section ui-kit-section"><div class="section-kicker">Actions</div><h2>Buttons, links, badges & controls</h2><div class="button-row"><button class="btn btn-primary">Primary</button><a class="btn btn-primary" href="#ui-kit-actions">Primary link</a><button class="btn btn-outline">Outline</button><button class="btn btn-ghost">Ghost</button><button class="btn btn-primary" disabled>Disabled</button><span class="badge">Badge</span></div><div class="ui-control-grid"><label>Text input<input class="people-search" value="Example value"></label><label>Select<select><option>Option one</option><option>Option two</option></select></label></div></section>
+      <section class="section ui-kit-section"><div class="section-kicker">Surfaces</div><h2>Cards, notices & status</h2><div class="three-grid"><article class="info-card"><h3>Information card</h3><p>Neutral reusable information surface.</p></article><article class="notice accent"><h3>Accent notice</h3><p>Important but non-destructive information.</p></article><article class="notice danger"><h3>Warning</h3><p>Warnings keep readable foreground contrast in every palette.</p></article></div></section>
+      <section class="section ui-kit-section"><div class="section-kicker">Empty state</div><h2>TBC / not yet published</h2><p class="lead-copy">Use an intentional editorial state instead of an empty grid or a bare “No data” message.</p>${tbcState}</section>
+      <section class="section ui-kit-section"><div class="section-kicker">Media</div><h2>Selectable gallery</h2><p class="lead-copy">The same image gallery widget is used for Venue, Accommodation, School and social content.</p>${gallery}</section>
+      <section class="section ui-kit-section"><div class="section-kicker">Data</div><h2>People & programme</h2>${samplePerson?`<div class="ui-person-preview">${personCard(samplePerson,false)}</div>`:'<article class="info-card"><h3>Person card</h3><p>Load People data to preview the production speaker card here.</p></article>'}<article class="program-row"><time>09:00–10:30</time><div><span class="badge">Session</span><h3>Scientific session · TBC</h3><p class="speaker-line"><strong>First Name Last Name</strong> · Affiliation</p><div class="talk-list"><div class="talk"><time>09:00</time><div><strong>Talk title · TBC</strong><span>First Name Last Name · Affiliation</span></div></div></div></div></article></section>
+      <section class="section ui-kit-section"><div class="section-kicker">Registration</div><h2>Pricing, deadlines & form controls</h2><div class="registration-head"><div><p class="lead-copy">Registration cards and form controls use the same theme tokens as the public site and regform.</p></div><div class="early-bird-box"><span>Early bird deadline</span><strong>TBC</strong><small>Regular fees: TBC</small></div></div><div class="pricing-grid"><article class="price-card"><div class="price-name">Participant</div><div class="price-period">Early bird · TBC</div><div class="price">TBC</div><div class="late"><span>Regular fee</span><strong>TBC</strong></div><ul><li>Included services: TBC</li></ul><a class="btn btn-primary" href="#ui-kit-registration">Choose this plan</a></article></div><div class="registration-form-grid"><label class="form-field"><span>Full name</span><input type="text" value="First Name Last Name"></label><label class="form-field"><span>Attendance type</span><select><option>Participant</option><option>Student</option></select></label><label class="form-field form-field-wide"><span>Notes</span><textarea rows="3">Example multiline field</textarea></label></div></section>
       <section class="section ui-kit-section"><div class="section-kicker">Layout</div><h2>Responsive grids</h2><div class="three-grid"><div class="card"><h3>Column A</h3><p>Uses common surface tokens.</p></div><div class="card"><h3>Column B</h3><p>Collapses consistently on small screens.</p></div><div class="card"><h3>Column C</h3><p>No page-specific theme fork.</p></div></div></section>`;
   }
 

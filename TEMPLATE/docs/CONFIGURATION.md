@@ -53,6 +53,10 @@ countdown:
 ```
 
 
+## Registration form settings
+
+Public registration content stays under `registration` in `conference.yaml`. The PHP form itself is configured separately in `regform/settings.yaml` under the top-level `regform` key. This dedicated file owns form availability, fields, privacy text used by the form, mail sender/reply-to/control recipients, upload/storage settings and rate limiting. The public frontend never reads this file.
+
 ## Registration, Venue and Social toggles (v1.5)
 
 - `registration.home_compact`: compact Registration rendering on the homepage.
