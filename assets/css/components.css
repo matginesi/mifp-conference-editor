@@ -202,3 +202,22 @@ input[type=number]{font-variant-numeric:tabular-nums}
 .check-empty{padding:18px;border:1px dashed var(--border);border-radius:7px;color:var(--muted);text-align:center}
 .check-target-pulse{outline:2px solid var(--accent)!important;outline-offset:3px!important;animation:checkTargetPulse .7s ease 2}
 @keyframes checkTargetPulse{50%{outline-color:#fff;box-shadow:0 0 0 6px rgba(181,18,43,.18)}}
+
+
+/* v1.19 — dedicated regform/email controls */
+.regform-mail-settings{display:grid;gap:10px}
+.regform-mail-intro{padding:9px 10px;border:1px solid var(--border);border-radius:7px;background:#11151a;color:var(--muted);font-size:11.5px;line-height:1.5}
+.regform-mail-intro p{margin:0}.regform-mail-intro b{color:var(--text)}
+.regform-mail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.regform-mail-field{display:grid;gap:4px;color:var(--muted);font-size:10.5px;font-weight:650;min-width:0}
+.regform-mail-field>span{color:var(--text)}.regform-mail-field>small{color:var(--dim);font-size:9.5px;line-height:1.35;font-weight:500}
+.regform-confirm-toggle{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:center;padding:8px 9px;border:1px solid var(--border);border-radius:7px;background:var(--panel2);cursor:pointer}
+.regform-confirm-toggle b{display:block;color:var(--text);font-size:11.5px}.regform-confirm-toggle small{display:block;color:var(--dim);font-size:9.5px;margin-top:2px}
+.regform-recipient-panel{display:grid;gap:7px;padding:9px;border:1px solid var(--border);border-radius:7px;background:#11151a}
+.regform-recipient-head{display:flex;align-items:end;justify-content:space-between;gap:10px}.regform-recipient-head b{display:block;color:var(--text);font-size:11.5px}.regform-recipient-head span{display:block;color:var(--dim);font-size:9.5px;margin-top:2px}
+.regform-recipient-list{display:grid;gap:6px}.regform-recipient-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center}.regform-recipient-row .button{min-height:30px}
+.regform-recipient-empty{padding:8px;border:1px dashed var(--border);border-radius:6px;color:var(--muted);font-size:11px}
+.regform-mail-status{padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:10.5px}.regform-mail-status.valid{border-color:#2f6446;color:#8edcab;background:#132019}.regform-mail-status.invalid{border-color:#70393c;color:#ffabab;background:#241416}
+input.invalid-control{border-color:#8f3d48!important;box-shadow:0 0 0 2px rgba(181,18,43,.14)!important}
+.regform-editor-callout{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid #60404a;border-radius:7px;background:#21161a}.regform-editor-callout b{display:block;color:var(--heading);font-size:11.5px}.regform-editor-callout span{display:block;color:var(--muted);font-size:9.5px;margin-top:2px}.regform-editor-callout .button{flex:0 0 auto}
+.regform-availability-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}

@@ -531,3 +531,12 @@
 @media(max-width:480px){
   .check-summary-grid{grid-template-columns:1fr 1fr}.check-stat:first-child{grid-column:1/-1}
 }
+
+
+@media(max-width:720px){
+  .regform-mail-grid{grid-template-columns:1fr}.regform-recipient-head{align-items:stretch}.regform-recipient-head .button{flex:0 0 auto}
+}
+@media(max-width:480px){
+  .regform-recipient-head{display:grid;grid-template-columns:1fr}.regform-recipient-head .button{width:100%}.regform-recipient-row{grid-template-columns:1fr}.regform-recipient-row .button{width:100%}
+}
+@media(max-width:720px){.regform-editor-callout{display:grid}.regform-editor-callout .button{width:100%}.regform-availability-grid{grid-template-columns:1fr}}

@@ -338,9 +338,29 @@ function load_settings(string $file): array
         throw new RuntimeException('conference.email must be configured.');
     }
 
+    $mailRequired = (bool)($registration['enabled'] ?? true)
+        && (bool)($form['enabled'] ?? true)
+        && (bool)($form['submit_enabled'] ?? false);
+    if ($mailRequired && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException('conference.email must be a valid email address while registration submissions are enabled.');
+    }
+
+    $fromEmail = trim((string)($mail['from_email'] ?? $contactEmail));
+    if ($mailRequired && !filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException('registration.form.mail.from_email must be a valid email address while registration submissions are enabled.');
+    }
+
     $adminEmails = yaml_string_list($mail['admin_emails'] ?? []);
     if ($adminEmails === []) {
         $adminEmails = [$contactEmail];
+    }
+    $adminEmails = array_values(array_unique(array_map('trim', $adminEmails)));
+    if ($mailRequired) {
+        foreach ($adminEmails as $adminEmail) {
+            if (!filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
+                throw new RuntimeException('registration.form.mail.admin_emails contains an invalid email address.');
+            }
+        }
     }
 
     $city = trim((string)($conference['city'] ?? ''));
@@ -370,12 +390,12 @@ function load_settings(string $file): array
             'back_url' => (string)($form['back_url'] ?? '../registration.html'),
             'privacy_url' => (string)($form['privacy_url'] ?? '../privacy.html'),
             'contact_email' => $contactEmail,
-            'registration_visible' => (bool)($registration['enabled'] ?? true),
-            'registration_open' => (bool)($form['submit_enabled'] ?? false),
+            'registration_visible' => (bool)($registration['enabled'] ?? true) && (bool)($form['enabled'] ?? true),
+            'registration_open' => (bool)($form['enabled'] ?? true) && (bool)($form['submit_enabled'] ?? false),
             'closed_message' => (string)($form['closed_message'] ?? $form['unavailable_label'] ?? 'Online registration is not currently available.'),
         ],
         'mail' => [
-            'from_email' => (string)($mail['from_email'] ?? $contactEmail),
+            'from_email' => $fromEmail,
             'from_name' => (string)($mail['from_name'] ?? ($conference['contact_name'] ?? 'MIFP')),
             'admin_emails' => $adminEmails,
             'subject_prefix' => (string)($mail['subject_prefix'] ?? '[MIFP]'),

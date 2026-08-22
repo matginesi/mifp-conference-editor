@@ -2,7 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[MIFP-EDITOR]';
-  const EDITOR_VERSION = '1.18.2';
+  const EDITOR_VERSION = '1.19.0';
   const supportsFsAccess = typeof window.showDirectoryPicker === 'function';
   const MAX_LOGS = 500;
   const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','avif']);
@@ -1002,7 +1002,8 @@
     { id:'accommodation', label:'Accommodation', file:'accommodation.html', sections:['accommodation'] },
     { id:'social', label:'Social Program', file:'social_program.html', sections:['social_program'] },
     { id:'travel', label:'Travel', file:'travel.html', sections:['travel'] },
-    { id:'registration', label:'Registration', file:'registration.html + regform/', sections:['registration'] },
+    { id:'registration', label:'Registration', file:'registration.html', sections:['registration'] },
+    { id:'regform', label:'Registration Form', file:'regform/ · email delivery', sections:[], virtual:'regform' },
     { id:'privacy', label:'Privacy', file:'privacy.html', sections:['privacy'] },
     { id:'global', label:'Global site', file:'shared on every page', sections:['site','conference','labels','navigation','assets','appearance','layout','footer','seo','organization'] },
     { id:'technical', label:'Technical', file:'advanced', sections:['template','runtime','security'] }
@@ -1016,9 +1017,15 @@
     return base;
   }
 
+  function settingsPageAvailable(page) {
+    if (!state.config || !page) return false;
+    if (page.virtual === 'regform') return Boolean(getConfig('registration.form', null));
+    return settingsPageSections(page).length > 0;
+  }
+
   function renderSettings() {
     if (!state.config) return;
-    const pages = SETTINGS_PAGES.filter((page)=>settingsPageSections(page).length);
+    const pages = SETTINGS_PAGES.filter(settingsPageAvailable);
     if (!pages.some((page)=>page.id===state.activeSettingsPage)) state.activeSettingsPage=(pages[0]||{}).id||'';
     renderSettingsSectionNav();
     renderSettingsSection();
@@ -1028,9 +1035,10 @@
     if (!state.config) return;
     const term = String(els.settingsSectionSearch.value || '').trim().toLowerCase();
     els.settingsSectionNav.replaceChildren();
-    SETTINGS_PAGES.filter((page)=>settingsPageSections(page).length).filter((page)=>{
+    SETTINGS_PAGES.filter(settingsPageAvailable).filter((page)=>{
       if (!term) return true;
-      return page.label.toLowerCase().includes(term) || page.file.toLowerCase().includes(term) || settingsPageSections(page).some((key)=>humanizeKey(key).toLowerCase().includes(term)||key.toLowerCase().includes(term));
+      const virtualTerms = page.virtual === 'regform' ? 'registration form regform email mail sender recipient confirmation control organizer' : '';
+      return page.label.toLowerCase().includes(term) || page.file.toLowerCase().includes(term) || virtualTerms.includes(term) || settingsPageSections(page).some((key)=>humanizeKey(key).toLowerCase().includes(term)||key.toLowerCase().includes(term));
     }).forEach((page) => {
       const btn = button('', 'settings-section-button settings-page-button' + (page.id === state.activeSettingsPage ? ' active' : ''));
       const name=div('settings-page-button-name',page.label), meta=div('settings-page-button-meta',page.file);
@@ -1055,6 +1063,7 @@
     els.settingsSectionHead.replaceChildren();
     const page=SETTINGS_PAGES.find((item)=>item.id===state.activeSettingsPage);
     if (!page) return;
+    if (page.virtual === 'regform') { renderRegformSettingsPage(page); return; }
     const titleWrap=div('settings-page-head-copy');
     const title=document.createElement('h2'); title.textContent=page.label;
     const note=document.createElement('p'); note.textContent='Edit the page section by section. Every visual editor is followed immediately by the raw YAML for that same section.';
@@ -1080,10 +1089,197 @@
     card.append(head);
     const visual=div('section-visual-editor');
     const experience=renderSettingsExperience(section,value); if(experience) visual.append(experience);
-    visual.append(renderYamlNode(value,[section],section,0));
+    let visualValue = value;
+    if (section === 'registration' && value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value,'form')) {
+      visualValue = Object.create(null);
+      Object.keys(value).forEach((key)=>{ if (key !== 'form') visualValue[key] = value[key]; });
+      const regformLink = div('regform-editor-callout');
+      const regformCopy = div(''); regformCopy.innerHTML = '<b>Registration form settings are separate</b><span>Open Registration Form to edit PHP form availability, email sender and control recipients.</span>';
+      const regformBtn = button('Open Registration Form','button ghost');
+      regformBtn.addEventListener('click',()=>{state.activeSettingsPage='regform';renderSettings();});
+      regformLink.append(regformCopy,regformBtn); visual.append(regformLink);
+    }
+    visual.append(renderYamlNode(visualValue,[section],section,0));
     card.append(visual);
     card.append(renderInlineSectionYaml(section));
     return card;
+  }
+
+  function renderRegformSettingsPage(page) {
+    const form = getConfig('registration.form', null);
+    if (!form || typeof form !== 'object' || Array.isArray(form)) return;
+
+    const titleWrap = div('settings-page-head-copy');
+    const title = document.createElement('h2'); title.textContent = page.label;
+    const note = document.createElement('p'); note.textContent = 'Configure the PHP registration form separately from the public registration page, including outgoing mail and organizer/control recipients.';
+    titleWrap.append(title, note);
+    const code = document.createElement('code'); code.textContent = page.file;
+    els.settingsSectionHead.append(titleWrap, code);
+
+    const availabilityCard = div('page-section-card regform-availability-card');
+    const availabilityHead = div('page-section-head');
+    const availabilityCopy = div('page-section-head-copy');
+    availabilityCopy.append(div('eyebrow','Availability'), Object.assign(document.createElement('h3'), { textContent:'Form availability' }), Object.assign(document.createElement('code'), { textContent:'registration.form.enabled / submit_enabled' }));
+    availabilityHead.append(availabilityCopy, div('section-state '+((form.enabled !== false && form.submit_enabled !== false)?'on':'off'),(form.enabled !== false && form.submit_enabled !== false)?'Open':'Closed'));
+    const availabilityVisual = div('section-visual-editor');
+    const availabilityGrid = div('regform-availability-grid');
+    const moduleToggle = document.createElement('label'); moduleToggle.className='regform-confirm-toggle';
+    const moduleCheckbox = document.createElement('input'); moduleCheckbox.type='checkbox'; moduleCheckbox.checked=form.enabled !== false;
+    const moduleText = document.createElement('span'); moduleText.innerHTML='<b>Registration form enabled</b><small>Controls whether the separate regform module is available.</small>';
+    moduleCheckbox.addEventListener('change',()=>{updateStructuredYaml(['registration','form','enabled'],moduleCheckbox.checked);renderSettingsSection();}); moduleToggle.append(moduleCheckbox,moduleText);
+    const submitToggle = document.createElement('label'); submitToggle.className='regform-confirm-toggle';
+    const submitCheckbox = document.createElement('input'); submitCheckbox.type='checkbox'; submitCheckbox.checked=form.submit_enabled !== false;
+    const submitText = document.createElement('span'); submitText.innerHTML='<b>Accept submissions</b><small>Close this while keeping the form/configuration in place.</small>';
+    submitCheckbox.addEventListener('change',()=>{updateStructuredYaml(['registration','form','submit_enabled'],submitCheckbox.checked);renderSettingsSection();}); submitToggle.append(submitCheckbox,submitText);
+    availabilityGrid.append(moduleToggle,submitToggle); availabilityVisual.append(availabilityGrid); availabilityCard.append(availabilityHead,availabilityVisual);
+
+    const mailCard = div('page-section-card regform-mail-card');
+    mailCard.id = 'editor-section-regform-mail';
+    const mailHead = div('page-section-head');
+    const mailCopy = div('page-section-head-copy');
+    mailCopy.append(div('eyebrow','Delivery'), Object.assign(document.createElement('h3'), { textContent:'Email delivery' }), Object.assign(document.createElement('code'), { textContent:'registration.form.mail' }));
+    mailHead.append(mailCopy, div('section-state on','Configured'));
+    const mailVisual = div('section-visual-editor');
+    mailVisual.append(renderRegformMailControls());
+    mailCard.append(mailHead, mailVisual);
+
+    const formCard = div('page-section-card');
+    formCard.id = 'editor-section-regform';
+    const formHead = div('page-section-head');
+    const formCopy = div('page-section-head-copy');
+    formCopy.append(div('eyebrow','Form'), Object.assign(document.createElement('h3'), { textContent:'Registration form' }), Object.assign(document.createElement('code'), { textContent:'registration.form' }));
+    const formEnabled = form.enabled !== false && form.submit_enabled !== false;
+    formHead.append(formCopy, div('section-state '+(formEnabled?'on':'off'),formEnabled?'Enabled':'Disabled'));
+    const formVisual = div('section-visual-editor');
+    const formWithoutMail = Object.create(null);
+    Object.keys(form).forEach((key)=>{ if (key !== 'mail') formWithoutMail[key] = form[key]; });
+    formVisual.append(renderYamlNode(formWithoutMail, ['registration','form'], 'form', 0));
+    formCard.append(formHead, formVisual);
+
+    els.settingsForm.append(availabilityCard, mailCard, formCard);
+  }
+
+  function regformBoundField(labelText, path, helpText, type) {
+    const label = document.createElement('label'); label.className = 'regform-mail-field';
+    const caption = document.createElement('span'); caption.textContent = labelText;
+    const input = document.createElement('input'); input.type = type || 'text'; input.value = String(getAtPath(state.config, path) || '');
+    const help = document.createElement('small'); help.textContent = helpText || path.join('.');
+    input.addEventListener('input', () => {
+      updateStructuredYaml(path, input.value);
+      updateEmailInputValidity(input);
+    });
+    updateEmailInputValidity(input);
+    label.append(caption, input, help);
+    return label;
+  }
+
+  function updateEmailInputValidity(input) {
+    if (!input || input.type !== 'email') return;
+    const value = String(input.value || '').trim();
+    const valid = value === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    input.classList.toggle('invalid-control', !valid);
+    input.setAttribute('aria-invalid', valid ? 'false' : 'true');
+  }
+
+  function renderRegformMailControls() {
+    const mail = getConfig('registration.form.mail', {});
+    const shell = div('regform-mail-settings');
+    const intro = div('regform-mail-intro');
+    intro.innerHTML = '<p><b>Participant confirmation</b> is sent to the email entered by the requester. <b>Control recipients</b> receive the organizer notification with the submitted details and payment proof. Recipient addresses are not exposed to the participant.</p>';
+    shell.append(intro);
+
+    const grid = div('regform-mail-grid');
+    grid.append(
+      regformBoundField('Sender email', ['registration','form','mail','from_email'], 'Address used in the From header. It must be accepted by the server/PHP mail configuration.', 'email'),
+      regformBoundField('Sender name', ['registration','form','mail','from_name'], 'Display name shown to recipients.', 'text'),
+      regformBoundField('Reply-to / conference contact', ['conference','email'], 'Replies to participant confirmations are directed here.', 'email'),
+      regformBoundField('Subject prefix', ['registration','form','mail','subject_prefix'], 'Prefix used for registration email subjects.', 'text')
+    );
+    shell.append(grid);
+
+    const toggle = document.createElement('label'); toggle.className = 'regform-confirm-toggle';
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = mail.send_user_confirmation !== false;
+    const toggleText = document.createElement('span'); toggleText.innerHTML = '<b>Send confirmation to requester</b><small>Uses the email address entered in the registration form.</small>';
+    checkbox.addEventListener('change', () => updateStructuredYaml(['registration','form','mail','send_user_confirmation'], checkbox.checked));
+    toggle.append(checkbox, toggleText); shell.append(toggle);
+
+    const recipients = div('regform-recipient-panel');
+    const recipientsHead = div('regform-recipient-head');
+    const recipientsCopy = div(''); recipientsCopy.innerHTML = '<b>Control / organizer recipients</b><span>Each address receives the organizer copy of every valid registration.</span>';
+    const add = button('+ Add address', 'button ghost');
+    recipientsHead.append(recipientsCopy, add); recipients.append(recipientsHead);
+    const list = div('regform-recipient-list'); recipients.append(list);
+
+    function renderRecipients() {
+      list.replaceChildren();
+      const values = getConfig('registration.form.mail.admin_emails', []);
+      const items = Array.isArray(values) ? values : (values ? [String(values)] : []);
+      if (!Array.isArray(getConfig('registration.form.mail.admin_emails', []))) {
+        setAtPath(state.config, ['registration','form','mail','admin_emails'], items);
+        syncStructuredYaml('regform.recipients_normalized', { count:items.length });
+      }
+      if (!items.length) list.append(div('regform-recipient-empty','Add at least one control recipient.'));
+      items.forEach((value, index) => {
+        const row = div('regform-recipient-row');
+        const input = document.createElement('input'); input.type='email'; input.value=String(value||''); input.placeholder='name@example.org';
+        updateEmailInputValidity(input);
+        input.addEventListener('input', () => {
+          const current = getAtPath(state.config, ['registration','form','mail','admin_emails']);
+          current[index] = input.value;
+          updateEmailInputValidity(input);
+          syncStructuredYaml('regform.recipient_changed', { index });
+        });
+        const remove = button('Remove','button ghost danger');
+        remove.addEventListener('click', () => {
+          const current = getAtPath(state.config, ['registration','form','mail','admin_emails']);
+          current.splice(index,1);
+          syncStructuredYaml('regform.recipient_removed',{index});
+          renderRecipients();
+        });
+        row.append(input, remove); list.append(row);
+      });
+    }
+
+    add.addEventListener('click', () => {
+      let current = getConfig('registration.form.mail.admin_emails', []);
+      if (!Array.isArray(current)) current = current ? [String(current)] : [];
+      current.push('');
+      setAtPath(state.config, ['registration','form','mail','admin_emails'], current);
+      syncStructuredYaml('regform.recipient_added',{count:current.length});
+      renderRecipients();
+      const inputs = list.querySelectorAll('input[type=email]'); if (inputs.length) inputs[inputs.length-1].focus();
+    });
+    renderRecipients(); shell.append(recipients);
+
+    const status = div('regform-mail-status');
+    shell.append(status);
+    const refreshStatus = () => {
+      const problem = validateRegformEmailSettings();
+      status.className = 'regform-mail-status ' + (problem ? 'invalid' : 'valid');
+      status.textContent = problem || 'Email delivery configuration is valid.';
+    };
+    shell.addEventListener('input', refreshStatus);
+    shell.addEventListener('change', refreshStatus);
+    shell.addEventListener('click', () => window.setTimeout(refreshStatus, 0));
+    refreshStatus();
+    return shell;
+  }
+
+  function validateRegformEmailSettings(onlyWhenActive) {
+    if (!state.config) return '';
+    const active = getConfig('registration.enabled', true) !== false && getConfig('registration.form.enabled', true) !== false && getConfig('registration.form.submit_enabled', false) !== false;
+    if (onlyWhenActive && !active) return '';
+    const emailOk = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+    const sender = getConfig('registration.form.mail.from_email','');
+    if (!emailOk(sender)) return 'Set a valid sender email for the registration form.';
+    const contact = getConfig('conference.email','');
+    if (!emailOk(contact)) return 'Set a valid conference contact / reply-to email.';
+    const rawRecipients = getConfig('registration.form.mail.admin_emails',[]);
+    const recipients = Array.isArray(rawRecipients) ? rawRecipients : [rawRecipients];
+    const cleaned = recipients.map((item)=>String(item||'').trim()).filter(Boolean);
+    if (!cleaned.length) return 'Add at least one control / organizer recipient email.';
+    if (cleaned.some((email)=>!emailOk(email))) return 'One or more control / organizer recipient addresses are invalid.';
+    return '';
   }
 
   function renderInlineSectionYaml(section) {
@@ -1095,7 +1291,7 @@
     const apply=button('Apply YAML','button');
     actions.append(reset,apply); head.append(copy,actions); panel.append(head);
     const status=div('validation-bar neutral','Synchronized with visual fields'); panel.append(status);
-    const textarea=document.createElement('textarea'); textarea.className='section-yaml-editor'; textarea.spellcheck=false; textarea.setAttribute('aria-label','Raw YAML for '+section);
+    const textarea=document.createElement('textarea'); textarea.className='section-yaml-editor'; textarea.spellcheck=false; textarea.dataset.section=section; textarea.setAttribute('aria-label','Raw YAML for '+section);
     const wrapper=Object.create(null); wrapper[section]=deepClone(state.config[section]);
     textarea.value=state.sectionYamlDrafts.get(section)||window.YamlLite.stringify(wrapper);
     textarea.addEventListener('input',()=>{state.sectionYamlDrafts.set(section,textarea.value);status.className='validation-bar neutral';status.textContent='Raw YAML modified · apply to synchronize';updateSaveState();});
@@ -1224,7 +1420,7 @@
       control = document.createElement('input'); control.type = 'number'; control.step = 'any'; control.value = String(value);
       control.addEventListener('change', () => updateStructuredYaml(path, control.value === '' ? 0 : Number(control.value)));
     } else if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) {
-      const box=div('yaml-color-control');const picker=document.createElement('input');picker.type='color';picker.value=value;control=document.createElement('input');control.type='text';control.value=value;const apply=(v)=>{control.value=v;picker.value=/^#[0-9a-f]{6}$/i.test(v)?v:picker.value;updateStructuredYaml(path,v);};picker.addEventListener('input',()=>apply(picker.value));control.addEventListener('change',()=>apply(control.value));box.append(picker,control);control._yamlWrapper=box;
+      const box=div('yaml-color-control');const picker=document.createElement('input');picker.type='color';picker.value=value;control=document.createElement('input');control.type='text';control.value=value;const apply=(v)=>{control.value=v;picker.value=/^#[0-9a-f]{6}$/i.test(v)?v:picker.value;updateStructuredYaml(path,v);};picker.addEventListener('input',()=>apply(picker.value));control.addEventListener('input',()=>apply(control.value));box.append(picker,control);control._yamlWrapper=box;
     } else if (isLong) {
       control = document.createElement('textarea'); control.rows = Math.min(8, Math.max(3, value.split('\n').length)); control.value = value;
       control.addEventListener('change', () => updateStructuredYaml(path, control.value));
@@ -1233,7 +1429,7 @@
       const key = String(label || '').toLowerCase();
       control.type = isIsoDateField(path,label,value) ? 'date' : key.includes('email') ? 'email' : (key.includes('url') || key.includes('href') || key.includes('website') ? 'url' : 'text');
       control.value = value == null ? '' : String(value);
-      control.addEventListener('change', () => updateStructuredYaml(path, control.value));
+      control.addEventListener('input', () => updateStructuredYaml(path, control.value));
     }
     wrap.append(lab);
     const renderedControl=control._yamlWrapper||control;
@@ -1389,9 +1585,26 @@
     els.yamlEditor.value = state.yamlText;
     setYamlStatus('valid', 'YAML valid · structured changes not saved');
     if (state.activeSettingsSection) renderSectionYamlEditor();
-    renderOverview();
+    syncVisibleInlineYamlEditors();
+    if (state.activeView === 'overview') renderOverview();
     updateSaveState();
     log('debug', eventName, details);
+  }
+
+  function syncVisibleInlineYamlEditors() {
+    document.querySelectorAll('.section-yaml-editor[data-section]').forEach((textarea) => {
+      const section = textarea.dataset.section || '';
+      if (!section || state.sectionYamlDrafts.has(section) || !Object.prototype.hasOwnProperty.call(state.config, section)) return;
+      const wrapper = Object.create(null);
+      wrapper[section] = deepClone(state.config[section]);
+      const next = window.YamlLite.stringify(wrapper);
+      if (textarea.value !== next) textarea.value = next;
+      const status = textarea.previousElementSibling;
+      if (status && status.classList && status.classList.contains('validation-bar')) {
+        status.className = 'validation-bar valid';
+        status.textContent = 'Synchronized with visual fields';
+      }
+    });
   }
 
   function getAtPath(root, path) {
@@ -1455,6 +1668,14 @@
     if (!state.config) return;
     try {
       if (state.sectionYamlDirty && !applySectionYamlFromEditor()) return;
+      const emailProblem = validateRegformEmailSettings(true);
+      if (emailProblem) {
+        state.activeSettingsPage = 'regform';
+        switchView('settings');
+        renderSettings();
+        toast(emailProblem, 'error');
+        return false;
+      }
       const parsed = window.YamlLite.parse(state.yamlText);
       state.config = parsed;
       const result = await writeProjectText('conference.yaml', state.yamlText.endsWith('\n') ? state.yamlText : state.yamlText + '\n');
