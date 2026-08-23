@@ -253,3 +253,48 @@ input.invalid-control{border-color:#8f3d48!important;box-shadow:0 0 0 2px rgba(1
 /* v1.22.7 — saveable People demo rows */
 .people-demo-banner{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--accent) 9%,var(--panel));color:var(--muted);font-size:12px}
 .people-demo-banner b{color:var(--text);white-space:nowrap}.people-demo-banner span{min-width:0}
+
+/* v1.22.13 — stable badge configuration layout after enhanced image controls */
+.document-control-block.badge-config-grid{
+  grid-template-columns:minmax(220px,1.6fr) minmax(92px,.65fr) minmax(92px,.65fr) minmax(200px,1.25fr);
+  align-items:end;
+  gap:8px 10px;
+}
+.badge-config-grid>label{min-width:0}
+.badge-config-grid .badge-size-field select,
+.badge-config-grid .badge-orientation-field select,
+.badge-config-grid input,
+.badge-config-grid select{width:100%;min-width:0}
+.badge-config-grid .badge-logo-field{
+  grid-column:1/-1;
+  margin-top:2px;
+  padding-top:9px;
+  border-top:1px solid var(--border);
+}
+.badge-config-grid .badge-logo-field>span:first-child{
+  color:var(--text);
+  font-size:11px;
+  font-weight:750;
+}
+.badge-config-grid .badge-logo-field .document-image-picker{
+  grid-template-columns:96px minmax(0,1fr);
+  max-width:720px;
+}
+.badge-config-grid .badge-logo-field .document-image-picker-preview{
+  width:96px;
+  height:68px;
+}
+
+
+/* v1.22.14 — stable certificate image fields and isolated image picker modal */
+.document-image-field-title{color:var(--text);font-size:11px;font-weight:750;line-height:1.3}
+.certificate-document-panel .document-control-block{grid-template-columns:minmax(180px,.62fr) minmax(280px,1fr) minmax(280px,1fr);align-items:start;gap:10px}
+.certificate-document-panel .certificate-asset-field{min-width:0;padding:8px;border:1px solid var(--border);border-radius:7px;background:#101419}
+.certificate-document-panel .document-image-picker{grid-template-columns:96px minmax(0,1fr);align-items:center;min-width:0}
+.certificate-document-panel .document-image-picker-preview{width:96px;height:70px}
+.certificate-document-panel .document-image-picker-controls,.certificate-document-panel .document-image-picker-actions{min-width:0}
+.certificate-document-panel .document-image-picker-actions .button{flex:0 0 auto}
+.image-picker-modal{position:fixed!important;inset:0!important;z-index:120!important}
+.image-picker-modal .modal{width:min(980px,calc(100vw - 28px));max-height:min(90dvh,900px)}
+.image-picker-modal .modal-body{min-width:0;overflow:auto}
+.image-picker-modal .yaml-image-picker-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr));align-items:start}

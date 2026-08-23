@@ -1,6 +1,6 @@
 {
   "workspace_schema": 1,
-  "editor_version": "1.18.1",
+  "editor_version": "1.22.16",
   "conference_version_file": "conference.version.json",
-  "template_directory": "TEMPLATE"
+  "template_archive": "templates/conference-template.zip"
 }

@@ -555,3 +555,35 @@
 }
 
 @media(max-width:720px){.yaml-image-current{grid-template-columns:1fr}.yaml-image-visual img{height:160px}.yaml-image-picker-top{grid-template-columns:1fr 1fr}.yaml-image-picker-top input{grid-column:1/-1}.yaml-image-picker-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.yaml-image-picker-card{grid-template-rows:96px auto}.yaml-image-picker-card img{height:96px}.yaml-image-actions{display:grid;grid-template-columns:1fr 1fr}.yaml-image-actions .button{width:100%}.document-image-picker{grid-template-columns:70px minmax(0,1fr)}.document-image-picker-preview{width:70px;height:56px}}
+
+/* v1.22.13 — badges: keep controls grouped instead of one long horizontal row */
+@container (max-width:1220px){
+  .document-control-block.badge-config-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .badge-config-grid .badge-logo-field{grid-column:1/-1!important}
+}
+@media(max-width:720px){
+  .document-control-block.badge-config-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .badge-config-grid .badge-logo-field{grid-column:1/-1!important}
+  .badge-config-grid .badge-logo-field .document-image-picker{max-width:none}
+}
+@media(max-width:480px){
+  .document-control-block.badge-config-grid{grid-template-columns:1fr!important}
+  .badge-config-grid .badge-logo-field{grid-column:auto!important}
+  .badge-config-grid .badge-logo-field .document-image-picker{grid-template-columns:72px minmax(0,1fr)}
+  .badge-config-grid .badge-logo-field .document-image-picker-preview{width:72px;height:58px}
+}
+
+
+/* v1.22.14 — certificate image controls */
+@media(max-width:980px){
+  .certificate-document-panel .document-control-block{grid-template-columns:1fr 1fr}
+  .certificate-document-panel .document-control-block>label:first-child{grid-column:1/-1}
+}
+@media(max-width:620px){
+  .certificate-document-panel .document-control-block{grid-template-columns:1fr}
+  .certificate-document-panel .document-control-block>label:first-child{grid-column:auto}
+  .certificate-document-panel .document-image-picker{grid-template-columns:82px minmax(0,1fr)}
+  .certificate-document-panel .document-image-picker-preview{width:82px;height:62px}
+  .image-picker-modal .yaml-image-picker-top{grid-template-columns:1fr}
+  .image-picker-modal .yaml-image-picker-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

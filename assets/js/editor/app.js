@@ -2,7 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[MIFP-EDITOR]';
-  const EDITOR_VERSION = '1.22.10';
+  const EDITOR_VERSION = '1.22.16';
   const supportsFsAccess = typeof window.showDirectoryPicker === 'function';
   const MAX_LOGS = 500;
   const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','avif']);
@@ -698,7 +698,7 @@
     els.modalBackdrop.classList.remove('hidden');
   }
 
-  function closeModal() { els.modalBackdrop.classList.add('hidden'); els.modalBackdrop.classList.remove('preview-modal','people-import-modal'); }
+  function closeModal() { els.modalBackdrop.classList.add('hidden'); els.modalBackdrop.classList.remove('preview-modal','people-import-modal','image-picker-modal'); }
 
   function showCanvasPreview(canvas, title) {
     if (!canvas) return;
@@ -3489,7 +3489,6 @@
         updateWorkspaceUi();
         populateProjectPicker();
       } else {
-        // Refresh first so a TEMPLATE folder added outside the editor is used.
         state.projects=await discoverFsProjects(root);
       }
 
@@ -3498,15 +3497,9 @@
 
       const dest = await root.getDirectoryHandle(name, { create: true });
       created = true;
-      const localTemplate = state.projects.find((project) => project.name === 'TEMPLATE' && project.handle);
-      let scaffold = 'bundled placeholder template';
-      if (localTemplate) {
-        await copyDirectory(localTemplate.handle, dest);
-        scaffold = 'TEMPLATE';
-      } else {
-        const entries = await loadBundledConferenceTemplateEntries();
-        await writeTemplateEntriesToDirectory(entries, dest);
-      }
+      const scaffold = 'templates/conference-template.zip';
+      const entries = await loadBundledConferenceTemplateEntries();
+      await writeTemplateEntriesToDirectory(entries, dest);
 
       await initializePlaceholderConference(dest, name);
       state.projects = await discoverFsProjects(root);
@@ -3525,7 +3518,7 @@
   }
 
   async function loadBundledConferenceTemplateEntries() {
-    if (location.protocol === 'file:') throw new Error('The bundled template cannot be fetched from file://. Open the repository workspace so its TEMPLATE folder is available, or serve the editor over HTTP.');
+    if (location.protocol === 'file:') throw new Error('The bundled conference template cannot be fetched from file://. Serve the editor over local HTTP (for example python -m http.server) to use New conference.');
     const url = new URL('templates/conference-template.zip', document.baseURI);
     const response = await fetch(url, { cache:'no-store', credentials:'same-origin' });
     if (!response.ok) throw new Error('Bundled placeholder template is unavailable (HTTP '+response.status+').');
@@ -3877,7 +3870,40 @@
   }
 
   function loadImage(url) { return new Promise((resolve)=>{if(!url){resolve(null);return;}const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>resolve(null);img.src=url;}); }
-  async function documentVisualsWithImages(){const v=conferenceVisuals();const [organizer,conference,badgeFooter,center,stamp]=await Promise.all([loadImage(assetPreviewUrl(v.organizerPath)),loadImage(assetPreviewUrl(v.confPath)),loadImage(assetPreviewUrl(v.badgeFooterPath)),loadImage(assetPreviewUrl(v.certificateCenterPath)),loadImage(assetPreviewUrl(v.certificateStampPath))]);v.organizerLogo=organizer;v.conferenceLogo=conference;v.badgeFooterLogo=badgeFooter;v.certificateCenterLogo=center||conference;v.certificateStamp=stamp;return v;}
+
+  async function loadDocumentAsset(path,label) {
+    const assetPath=String(path||'').trim();
+    if(!assetPath)return null;
+    const asset=state.assets.find((item)=>item.path===assetPath);
+    if(!asset){log('warn','documents.image_missing',{label:label||'image',path:assetPath});return null;}
+    // Prefer decoding the actual project Blob. This does not depend on a preview
+    // object URL staying alive while the certificate preview is refreshing.
+    if(typeof createImageBitmap==='function'){
+      try{
+        const bitmap=await createImageBitmap(asset.blob);
+        if(bitmap&&bitmap.width>0&&bitmap.height>0)return bitmap;
+      }catch(error){
+        log('debug','documents.image_bitmap_fallback',{label:label||'image',path:assetPath,message:error&&error.message||String(error)});
+      }
+    }
+    const image=await loadImage(assetPreviewUrl(assetPath));
+    if(!image)log('warn','documents.image_decode_failed',{label:label||'image',path:assetPath,type:asset.type||''});
+    return image;
+  }
+
+  async function documentVisualsWithImages(){
+    const v=conferenceVisuals();
+    const [organizer,conference,badgeFooter,center,stamp]=await Promise.all([
+      loadDocumentAsset(v.organizerPath,'organizer logo'),
+      loadDocumentAsset(v.confPath,'conference logo'),
+      loadDocumentAsset(v.badgeFooterPath,'badge footer logo'),
+      loadDocumentAsset(v.certificateCenterPath,'certificate center logo'),
+      loadDocumentAsset(v.certificateStampPath,'certificate stamp')
+    ]);
+    v.organizerLogo=organizer;v.conferenceLogo=conference;v.badgeFooterLogo=badgeFooter;v.certificateCenterLogo=center||conference;v.certificateStamp=stamp;
+    v.certificateStampReady=!v.certificateStampPath||Boolean(stamp);
+    return v;
+  }
 
   function normalizedPersonRoles(person){return String(person.Role||person.Roles||person.Category||'').split(/[;,|]/).map(v=>v.trim().toLowerCase()).filter(Boolean);}
 
@@ -3947,16 +3973,16 @@
     optsState.exportScope='all';
     const panel=div('panel document-panel badge-document-panel');
     const h=document.createElement('div');h.className='document-panel-head';h.innerHTML='<div><div class="eyebrow">Portrait A7 / A6 · A4 sheets</div><h2>Badges</h2><p>Preview is automatic. Person selection below affects export only.</p></div>';panel.append(h);
-    const cfg=div('doc-config-grid document-control-block');
-    const preset=document.createElement('label');preset.textContent='Badge size';const ps=document.createElement('select');[['74x105','A7 portrait · 74 × 105 mm'],['105x148','A6 portrait · 105 × 148 mm'],['110x130','Legacy portrait · 110 × 130 mm'],['custom','Custom portrait']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ps.append(o);});ps.value=optsState.preset||'74x105';preset.append(ps);
-    const wl=document.createElement('label');wl.textContent='Width (mm)';const wi=document.createElement('input');wi.type='number';wi.min='50';wi.max='150';wi.value=String(optsState.widthMm);wl.append(wi);
-    const hl=document.createElement('label');hl.textContent='Height (mm)';const hi=document.createElement('input');hi.type='number';hi.min='80';hi.max='210';hi.value=String(optsState.heightMm);hl.append(hi);
-    const ol=document.createElement('label');ol.textContent='A4 orientation';const os=document.createElement('select');[['auto','Auto · least white space'],['portrait','Portrait'],['landscape','Landscape']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;os.append(o);});os.value=optsState.pageOrientation||'auto';ol.append(os);
+    const cfg=div('doc-config-grid document-control-block badge-config-grid');
+    const preset=document.createElement('label');preset.className='badge-size-field';preset.textContent='Badge size';const ps=document.createElement('select');[['74x105','A7 portrait · 74 × 105 mm'],['105x148','A6 portrait · 105 × 148 mm'],['110x130','Legacy portrait · 110 × 130 mm'],['custom','Custom portrait']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ps.append(o);});ps.value=optsState.preset||'74x105';preset.append(ps);
+    const wl=document.createElement('label');wl.className='badge-dimension-field';wl.textContent='Width (mm)';const wi=document.createElement('input');wi.type='number';wi.min='50';wi.max='150';wi.value=String(optsState.widthMm);wl.append(wi);
+    const hl=document.createElement('label');hl.className='badge-dimension-field';hl.textContent='Height (mm)';const hi=document.createElement('input');hi.type='number';hi.min='80';hi.max='210';hi.value=String(optsState.heightMm);hl.append(hi);
+    const ol=document.createElement('label');ol.className='badge-orientation-field';ol.textContent='A4 orientation';const os=document.createElement('select');[['auto','Auto · least white space'],['portrait','Portrait'],['landscape','Landscape']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;os.append(o);});os.value=optsState.pageOrientation||'auto';ol.append(os);
     const ml=document.createElement('label');ml.textContent='Outer margin (mm)';const mi=document.createElement('input');mi.type='number';mi.min='0';mi.max='30';mi.step='.5';mi.value=String(optsState.marginMm);ml.append(mi);
     const gl=document.createElement('label');gl.textContent='Gap (mm)';const gi=document.createElement('input');gi.type='number';gi.min='0';gi.max='20';gi.step='.5';gi.value=String(optsState.gapMm);gl.append(gi);
     const cl=document.createElement('label');cl.textContent='Crop marks';const cs=document.createElement('select');[['true','Yes'],['false','No']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;cs.append(o);});cs.value=optsState.cutLines?'true':'false';cl.append(cs);
     const blankLabel=document.createElement('label');blankLabel.textContent='Blank badges';const blankInput=document.createElement('input');blankInput.type='number';blankInput.min='0';blankInput.max='200';blankInput.step='1';blankInput.value=String(Math.max(0,Number(optsState.blankCount)||0));blankLabel.append(blankInput);
-    const badgeCfg=ensureBadgeDocumentConfig();const footerField=certificateAssetField('Bottom logo / sponsor',badgeCfg.footer_logo||'',true,['documents','badges','footer_logo']);
+    const badgeCfg=ensureBadgeDocumentConfig();const footerField=certificateAssetField('Bottom logo / sponsor',badgeCfg.footer_logo||'',true,['documents','badges','footer_logo']);footerField.node.classList.add('badge-logo-field');
     cfg.append(preset,wl,hl,ol,ml,gl,cl,blankLabel,footerField.node);panel.append(cfg);
 
     const previewSection=div('document-section document-preview-section');
@@ -4013,9 +4039,9 @@
   }
 
   function certificateAssetField(labelText,value,allowNone,configPath) {
-    const label=document.createElement('label');label.className='certificate-asset-field enhanced-image-field';
-    const caption=document.createElement('span');caption.textContent=labelText;label.append(caption);
-    const select=document.createElement('select');select.className='sr-only';
+    const field=div('certificate-asset-field enhanced-image-field');
+    const caption=div('document-image-field-title',labelText);field.append(caption);
+    const select=document.createElement('select');select.className='sr-only';select.setAttribute('aria-label',labelText);
     if(allowNone){const none=document.createElement('option');none.value='';none.textContent='None';select.append(none);}
     const imageAssets=state.assets.filter(asset=>PREVIEWABLE_EXTENSIONS.has(extensionOf(asset.path))&&!asset.path.startsWith('assets/people/')).sort((a,b)=>{const score=x=>/(?:branding|logo|stamp|seal)/i.test(x.path)?0:/assets\/misc\//i.test(x.path)?1:2;return score(a)-score(b)||a.path.localeCompare(b.path);});
     imageAssets.forEach(asset=>{const o=document.createElement('option');o.value=asset.path;o.textContent=asset.path;select.append(o);});
@@ -4031,7 +4057,7 @@
     const upload=button(select.value?'Replace':'Upload','button ghost');
     const view=button('View','button ghost');
     const remove=button('Remove','button ghost danger');
-    actions.append(choose,upload,view,remove);controls.append(pathText,actions);picker.append(preview,controls);label.append(select,picker);
+    actions.append(choose,upload,view,remove);controls.append(pathText,actions);picker.append(preview,controls);field.append(select,picker);
 
     const refreshVisual=()=>{
       preview.replaceChildren();const path=select.value||'';pathText.textContent=path||'No image selected';
@@ -4039,6 +4065,7 @@
       choose.textContent=path?'Change image':'Choose image';upload.textContent=path?'Replace':'Upload';view.disabled=!path;remove.disabled=!path;
     };
     const chooseModal=()=>{
+      els.modalBackdrop.classList.remove('preview-modal','people-import-modal');els.modalBackdrop.classList.add('image-picker-modal');
       els.modalTitle.textContent='Choose image · '+labelText;els.modalBody.replaceChildren();
       const top=div('yaml-image-picker-top');const search=document.createElement('input');search.type='search';search.placeholder='Search project images…';const none=button('No image','button ghost');top.append(search,none);els.modalBody.append(top);
       const grid=div('yaml-image-picker-grid');els.modalBody.append(grid);
@@ -4052,7 +4079,7 @@
       const input=document.createElement('input');input.type='file';input.accept='image/*';input.hidden=true;document.body.append(input);
       input.addEventListener('change',async()=>{const file=input.files&&input.files[0];input.remove();if(!file)return;try{const current=select.value||'';const directory=current&&current.includes('/')?current.slice(0,current.lastIndexOf('/')+1):'assets/branding/';const sameExt=current&&extensionOf(current)===extensionOf(file.name)&&state.assets.some(a=>a.path===current);const target=sameExt?current:directory+file.name;await writeProjectBlob(target,file);if(Array.isArray(configPath))setAtPath(state.config,configPath,target);await loadAssets();syncStructuredYaml('documents.image_uploaded',{path:(configPath||[]).join('.'),asset:target});renderDocuments();toast('Image saved: '+target,'success');}catch(error){log('error','documents.image_upload_failed',{message:error.message});toast('Could not save image: '+error.message,'error');}});input.click();
     });
-    refreshVisual();return {node:label,select,refresh:refreshVisual};
+    refreshVisual();return {node:field,select,refresh:refreshVisual};
   }
 
   function renderCertificatePanel() {
@@ -4060,7 +4087,7 @@
     const panel=div('panel document-panel certificate-document-panel');const h=document.createElement('div');h.className='document-panel-head';h.innerHTML='<div><div class="eyebrow">A4 · 20 mm white border</div><h2>Certificates</h2><p>Stable automatic preview; People selection affects export only.</p></div>';panel.append(h);
     const cfg=div('doc-config-grid document-control-block');
     const pl=document.createElement('label');pl.textContent='Presentation details';const ps=document.createElement('select');[['true','Include when a title is found'],['false','Attendance only']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ps.append(o);});ps.value=optsState.includePresentation!==false?'true':'false';pl.append(ps);
-    const centerField=certificateAssetField('Logo below signatures',cfgState.center_logo||getConfig('assets.logo',''),true,['documents','certificates','center_logo']);const stampField=certificateAssetField('Stamp · bottom left',cfgState.stamp_logo||'',true,['documents','certificates','stamp_logo']);
+    const centerField=certificateAssetField('Logo below signatures',cfgState.center_logo||getConfig('assets.logo',''),true,['documents','certificates','center_logo']);const stampField=certificateAssetField('Stamp · centered below right signature',cfgState.stamp_logo||'',true,['documents','certificates','stamp_logo']);
     cfg.append(pl,centerField.node,stampField.node);panel.append(cfg);
     panel.append(certificateSignatureEditor(scheduleRefresh));
 
@@ -4087,7 +4114,7 @@
 
   async function documentExportButton(btn,progress,fn){const old=btn.textContent;btn.disabled=true;progress.reset();const report=(value,label)=>progress.set(value,label);try{report(1,'Preparing '+old.toLowerCase());await nextPaint();await fn(report);progress.done('Export ready');log('info','documents.exported',{type:old});}catch(error){const validation=error&&error.code==='DOCUMENT_VALIDATION';const message=error&&error.message?error.message:String(error||'Unknown document export error');if(validation){progress.reset();log('warn','documents.export_blocked',{type:old,message});toast(message,'warning');}else{progress.error('Generation failed');log('error','documents.export_failed',{type:old,message,name:error&&error.name||'Error',stack:error&&error.stack||''});toast('Document export failed: '+message,'error');}}finally{btn.disabled=false;btn.textContent=old;}}
 
-  async function projectAssetAsPng(path){if(!path)return null;try{const url=assetPreviewUrl(path);if(!url)return null;const img=await loadImage(url);if(!img)return null;const c=document.createElement('canvas');const max=900,r=Math.min(1,max/Math.max(img.naturalWidth||1,img.naturalHeight||1));c.width=Math.max(1,Math.round((img.naturalWidth||600)*r));c.height=Math.max(1,Math.round((img.naturalHeight||300)*r));const ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(img,0,0,c.width,c.height);return await new Promise((resolve)=>c.toBlob(resolve,'image/png'));}catch(_){return null;}}
+  async function projectAssetAsPng(path){if(!path)return null;try{const img=await loadDocumentAsset(path,'DOCX image');if(!img)return null;const iw=Number(img.naturalWidth||img.width||0),ih=Number(img.naturalHeight||img.height||0);if(!iw||!ih)return null;const c=document.createElement('canvas');const max=900,r=Math.min(1,max/Math.max(iw,ih));c.width=Math.max(1,Math.round(iw*r));c.height=Math.max(1,Math.round(ih*r));const ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(img,0,0,c.width,c.height);return await new Promise((resolve)=>c.toBlob(resolve,'image/png'));}catch(error){log('warn','documents.image_png_failed',{path,message:error&&error.message||String(error)});return null;}}
 
   async function loadBundledTemplate(kind){const path=kind==='badge'?'templates/badges_template.docx':'templates/certificate_template.docx';if(location.protocol==='file:')throw new Error('Filled template DOCX export needs the editor served over local HTTP. A4 DOCX/PDF export works without it.');const response=await fetch(path);if(!response.ok)throw new Error('Could not load '+path);return response.blob();}
   function templateReplacements(kind,p){const v=conferenceVisuals(),pres=presentationForPerson(p)||{},presentationLine=pres.title?(pres.label||'Presentation'):'';const sig=Array.isArray(v.signatures)?v.signatures:[];const s1=sig[0]||{},s2=sig[1]||{},s3=sig[2]||{},s4=sig[3]||{};return {DOC_SURNAME:p['Last Name']||'',DOC_NAME:p['First Name']||'',DOC_CONF_SHORT:kind==='badge'?(v.badgeName||v.shortName):v.shortName,DOC_CONF_FULL:v.fullName,DOC_LOCATION:kind==='badge'?(v.badgeLocation||''):v.location,DOC_DATE_RANGE:v.date,DOC_DATE:v.date,DOC_ROLE:String(p.Category||p.Role||'').split(/[;,|]/)[0].trim(),AFFILIATION_:p.Affiliation||'',COUNTRY_:p.Country||'',DOC_PRESENTATION_LINE:presentationLine,DOC_PRESENTED_PREFIX:presentationLine,DOC_PRESENTATION_TYPE:pres.type||'',DOC_ABSTRACT_TITLE:pres.title||'',DOC_ORGANIZER_ADDRESS:v.organizerAddress||'',DOC_PHONE:v.phone||'',DOC_EMAIL:v.email||'',DOC_SIGN_1_TITLE:s1.title||'',DOC_SIGN_1_NAME:s1.name||'',DOC_SIGN_1_AFF:s1.affiliation||'',DOC_SIGN_2_TITLE:s2.title||'',DOC_SIGN_2_NAME:s2.name||'',DOC_SIGN_2_AFF:s2.affiliation||'',DOC_SIGN_3_TITLE:s3.title||'',DOC_SIGN_3_NAME:s3.name||'',DOC_SIGN_3_AFF:s3.affiliation||'',DOC_SIGN_4_TITLE:s4.title||'',DOC_SIGN_4_NAME:s4.name||'',DOC_SIGN_4_AFF:s4.affiliation||'',DOC_CHAIR_LEFT:s1.name||'',DOC_CHAIR_LEFT_AFF:s1.affiliation||'',DOC_CHAIR_RIGHT:s2.name||'',DOC_CHAIR_RIGHT_AFF:s2.affiliation||''};}
