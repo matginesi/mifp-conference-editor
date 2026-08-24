@@ -147,8 +147,11 @@
         });
       }
 
-      const centerLogoW=44.0;
-      drawImageContain(ctx,visuals.certificateCenterLogo,(105-centerLogoW/2)*S,logoTop*S,centerLogoW*S,logoH*S);
+      const centerLogoW=Math.max(12,Math.min(100,Number(visuals.certificateCenterLogoWidthMm)||44.0));
+      const centerLogoX=105+Math.max(-60,Math.min(60,Number(visuals.certificateCenterLogoOffsetXmm)||0));
+      const centerLogoY=logoTop+Math.max(-35,Math.min(20,Number(visuals.certificateCenterLogoOffsetYmm)||0));
+      const centerLogoH=Math.max(8,logoH*(centerLogoW/44.0));
+      drawImageContain(ctx,visuals.certificateCenterLogo,(centerLogoX-centerLogoW/2)*S,centerLogoY*S,centerLogoW*S,centerLogoH*S);
       const stampSize=30.0,signatureGapMm=11.0,signatureCellMm=((right-left)-signatureGapMm)/2,rightSignatureCenter=left+signatureCellMm+signatureGapMm+signatureCellMm/2;
       drawImageContain(ctx,visuals.certificateStamp,(rightSignatureCenter-stampSize/2)*S,245.5*S,stampSize*S,stampSize*S);
 

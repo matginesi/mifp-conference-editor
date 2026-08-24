@@ -2,7 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[MIFP-EDITOR]';
-  const EDITOR_VERSION = '1.22.17';
+  const EDITOR_VERSION = '1.22.18';
   const supportsFsAccess = typeof window.showDirectoryPicker === 'function';
   const MAX_LOGS = 500;
   const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','avif']);
@@ -18,6 +18,7 @@
     projects: [],
     memoryFiles: new Map(),
     memoryOverrides: new Map(),
+    memoryDeleted: new Set(),
     yamlText: '',
     config: null,
     regformYamlText: '',
@@ -109,6 +110,7 @@
       assetsEmpty: $('assetsEmpty'),
       assetsContent: $('assetsContent'),
       refreshAssetsBtn: $('refreshAssetsBtn'),
+      cleanUnusedAssetsBtn: $('cleanUnusedAssetsBtn'),
       assetSearch: $('assetSearch'),
       assetTargetPath: $('assetTargetPath'),
       assetChooseBtn: $('assetChooseBtn'),
@@ -188,6 +190,7 @@
       updateSaveState();
     });
     els.refreshAssetsBtn.addEventListener('click', loadAssets);
+    if (els.cleanUnusedAssetsBtn) els.cleanUnusedAssetsBtn.addEventListener('click', cleanUnusedAssets);
     els.assetSearch.addEventListener('input', renderAssets);
     els.assetChooseBtn.addEventListener('click', () => els.assetFileInput.click());
     els.assetFileInput.addEventListener('change', handleAddOrReplaceAsset);
@@ -581,6 +584,7 @@
       state.workspaceName = handle.name;
       state.memoryFiles.clear();
       state.memoryOverrides.clear();
+      state.memoryDeleted.clear();
       const projects = await discoverFsProjects(handle);
       state.projects = projects;
       const real = realConferenceProjects(projects);
@@ -648,6 +652,7 @@
     state.projectHandle = null;
     state.memoryFiles.clear();
     state.memoryOverrides.clear();
+    state.memoryDeleted.clear();
 
     const topName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split('/')[0] : 'Imported folder';
     state.workspaceName = topName;
@@ -711,6 +716,7 @@
       state.projectHandle = null;
       state.memoryFiles = importedFiles;
       state.memoryOverrides.clear();
+      state.memoryDeleted.clear();
       state.workspaceName = file.name;
       state.projects = projects;
       state.yamlDirty = false;
@@ -1179,7 +1185,7 @@
     els.assetsContent.classList.toggle('hidden', !loaded);
     els.yamlEmpty.classList.toggle('hidden', loaded);
     els.yamlEditorWrap.classList.toggle('hidden', !loaded);
-    [els.saveAllBtn, els.exportZipBtn, els.previewSiteBtn, els.saveYamlFromSettingsBtn, els.saveRegformBtn, els.refreshAssetsBtn, els.refreshChecksBtn, els.savePeopleBtn, els.saveProgramBtn, els.saveDatesBtn, els.validateYamlBtn, els.downloadYamlBtn, els.saveYamlBtn, els.bumpPatchBtn, els.bumpMinorBtn, els.bumpMajorBtn, els.saveVersionBtn].forEach((button) => { button.disabled = !loaded; });
+    [els.saveAllBtn, els.exportZipBtn, els.previewSiteBtn, els.saveYamlFromSettingsBtn, els.saveRegformBtn, els.refreshAssetsBtn, els.cleanUnusedAssetsBtn, els.refreshChecksBtn, els.savePeopleBtn, els.saveProgramBtn, els.saveDatesBtn, els.validateYamlBtn, els.downloadYamlBtn, els.saveYamlBtn, els.bumpPatchBtn, els.bumpMinorBtn, els.bumpMajorBtn, els.saveVersionBtn].forEach((button) => { button.disabled = !loaded; });
     els.openSiteBtn.disabled = !loaded;
     els.previewSiteBtn.disabled = !loaded;
   }
@@ -1244,6 +1250,7 @@
     if (state.mode === 'memory') {
       const key = state.projectPrefix + safePath;
       const overrideKey = state.projectPrefix + safePath;
+      if (state.memoryDeleted.has(key)) throw new Error('File not found: ' + safePath);
       if (state.memoryOverrides.has(overrideKey)) return state.memoryOverrides.get(overrideKey);
       const file = state.memoryFiles.get(key);
       if (!file) throw new Error('File not found: ' + safePath);
@@ -1261,6 +1268,7 @@
       await writable.close();
       return 'saved';
     }
+    state.memoryDeleted.delete(state.projectPrefix + safePath);
     state.memoryOverrides.set(state.projectPrefix + safePath, new Blob([String(text)], { type: safePath.endsWith('.csv') ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8' }));
     return 'staged';
   }
@@ -1274,8 +1282,28 @@
       await writable.close();
       return 'saved';
     }
+    state.memoryDeleted.delete(state.projectPrefix + safePath);
     state.memoryOverrides.set(state.projectPrefix + safePath, blob);
     return 'staged';
+  }
+
+  async function deleteProjectPath(path) {
+    const safePath = normalizeProjectPath(path);
+    if (state.mode === 'fs') {
+      const parts = safePath.split('/').filter(Boolean);
+      const name = parts.pop();
+      let dir = state.projectHandle;
+      for (const part of parts) dir = await dir.getDirectoryHandle(part);
+      await dir.removeEntry(name);
+      return 'deleted';
+    }
+    if (state.mode === 'memory') {
+      const key = state.projectPrefix + safePath;
+      state.memoryOverrides.delete(key);
+      state.memoryDeleted.add(key);
+      return 'staged-delete';
+    }
+    throw new Error('No project open');
   }
 
   async function getFileHandleByPath(root, path, create) {
@@ -3330,13 +3358,13 @@
     const prefix = state.projectPrefix + 'assets/';
     const result = [];
     state.memoryFiles.forEach((file, path) => {
-      if (!path.startsWith(prefix)) return;
+      if (!path.startsWith(prefix) || state.memoryDeleted.has(path)) return;
       const projectPath = path.slice(state.projectPrefix.length);
       const blob = state.memoryOverrides.get(state.projectPrefix + projectPath) || file;
       result.push({ path: projectPath, name: fileNameFromPath(projectPath), blob, size: blob.size, type: blob.type || typeFromName(projectPath) });
     });
     state.memoryOverrides.forEach((blob, key) => {
-      if (!key.startsWith(state.projectPrefix + 'assets/')) return;
+      if (!key.startsWith(state.projectPrefix + 'assets/') || state.memoryDeleted.has(key)) return;
       const projectPath = key.slice(state.projectPrefix.length);
       const exists = result.some((item) => item.path === projectPath);
       if (!exists) result.push({ path: projectPath, name: fileNameFromPath(projectPath), blob, size: blob.size, type: blob.type || typeFromName(projectPath) });
@@ -3367,9 +3395,11 @@
       const actions = div('asset-actions');
       const replaceBtn = button('Replace', 'button');
       const downloadBtn = button('Download', 'button ghost');
+      const removeBtn = button('Remove', 'button ghost danger');
       replaceBtn.addEventListener('click', () => chooseReplacementForAsset(asset.path));
       downloadBtn.addEventListener('click', () => downloadBlob(asset.name, asset.blob));
-      actions.append(replaceBtn, downloadBtn); body.append(actions); card.append(preview, body); els.assetGrid.append(card);
+      removeBtn.addEventListener('click', () => removeAsset(asset.path));
+      actions.append(replaceBtn, downloadBtn, removeBtn); body.append(actions); card.append(preview, body); els.assetGrid.append(card);
     });
   }
 
@@ -3387,6 +3417,116 @@
     els.assetFileInput.click();
   }
 
+  const TEXT_REFERENCE_EXTENSIONS = new Set(['html','htm','css','js','mjs','json','yaml','yml','csv','md','txt','xml','php','ini','conf','svg']);
+  const CLEANUP_PROTECTED_ASSET_NAMES = new Set(['.gitkeep','README.md','IMAGE_CREDITS.md']);
+
+  function replaceStringDeep(value, from, to) {
+    let changed = 0;
+    function walk(node) {
+      if (typeof node === 'string') {
+        if (!node.includes(from)) return node;
+        changed += node.split(from).length - 1;
+        return node.split(from).join(to);
+      }
+      if (Array.isArray(node)) { node.forEach((item,index)=>{ node[index]=walk(item); }); return node; }
+      if (node && typeof node === 'object') { Object.keys(node).forEach((key)=>{ node[key]=walk(node[key]); }); }
+      return node;
+    }
+    walk(value);
+    return changed;
+  }
+
+  async function replaceAssetReferences(oldPath, newPath) {
+    if (!oldPath || !newPath || oldPath === newPath) return 0;
+    const configChanged = replaceStringDeep(state.config, oldPath, newPath);
+    const regformChanged = state.regformConfig ? replaceStringDeep(state.regformConfig, oldPath, newPath) : 0;
+    const peopleChanged = replaceStringDeep(state.people.rows, oldPath, newPath);
+    const programChanged = replaceStringDeep(state.program.rows, oldPath, newPath);
+    const changed = configChanged + regformChanged + peopleChanged + programChanged;
+    if (configChanged) {
+      state.yamlText = window.YamlLite.stringify(conferenceConfigForStorage());
+      state.yamlDirty = true;
+      els.yamlEditor.value = state.yamlText;
+    }
+    if (regformChanged) {
+      state.regformConfig = getConfig('registration.form', state.regformConfig || Object.create(null));
+      state.regformYamlText = stringifyRegformSettings(state.regformConfig);
+      state.regformDirty = true;
+    }
+    if (peopleChanged) state.people.dirty = true;
+    if (programChanged) state.program.dirty = true;
+    if (changed) updateSaveState();
+    return changed;
+  }
+
+  async function assetReferenceReport(assetPath) {
+    const refs = [];
+    const entries = await collectProjectEntriesForExport();
+    for (const entry of entries) {
+      if (!entry || !entry.path || entry.path === assetPath || entry.path.startsWith('assets/')) continue;
+      const ext = extensionOf(entry.path);
+      if (!TEXT_REFERENCE_EXTENSIONS.has(ext)) continue;
+      try {
+        const text = await entry.data.text();
+        if (text.includes(assetPath)) refs.push(entry.path);
+      } catch (_) {}
+    }
+    return Array.from(new Set(refs)).sort();
+  }
+
+  async function removeAsset(path, options) {
+    const opts = options || {};
+    const assetPath = normalizeProjectPath(path);
+    try {
+      const refs = opts.references || await assetReferenceReport(assetPath);
+      if (!opts.skipConfirm) {
+        const detail = refs.length
+          ? 'This file is referenced by '+refs.length+' project file'+(refs.length===1?'':'s')+':\n\n'+refs.slice(0,6).join('\n')+(refs.length>6?'\n…':'')+'\n\nRemoving it may leave a broken image or document reference.'
+          : 'This asset does not appear to be referenced by the current project files.';
+        const ok = await totemConfirm('Remove asset', fileNameFromPath(assetPath)+'\n\n'+detail, 'Remove file', { danger:true });
+        if (!ok) return false;
+      }
+      const result = await deleteProjectPath(assetPath);
+      await loadAssets();
+      log('info','asset.removed',{path:assetPath,references:refs.length,mode:result});
+      if (!opts.silent) toast(result === 'deleted' ? 'Asset removed: '+assetPath : 'Asset marked for removal from the next ZIP: '+assetPath, 'success');
+      return true;
+    } catch (error) {
+      log('error','asset.remove_failed',{path:assetPath,message:error.message});
+      if (!opts.silent) toast('Could not remove asset: '+error.message,'error');
+      return false;
+    }
+  }
+
+  async function cleanUnusedAssets() {
+    if (!state.config) return;
+    const buttonEl = els.cleanUnusedAssetsBtn;
+    const oldLabel = buttonEl ? buttonEl.textContent : '';
+    if (buttonEl) { buttonEl.disabled = true; buttonEl.textContent = 'Checking…'; }
+    try {
+      const unused = [];
+      for (const asset of state.assets) {
+        if (CLEANUP_PROTECTED_ASSET_NAMES.has(fileNameFromPath(asset.path))) continue;
+        const refs = await assetReferenceReport(asset.path);
+        if (!refs.length) unused.push(asset.path);
+      }
+      if (!unused.length) { toast('No unused assets found.','success'); return; }
+      const preview = unused.slice(0,12).join('\n') + (unused.length>12?'\n… and '+(unused.length-12)+' more':'' );
+      const ok = await totemConfirm('Clean unused assets', 'The editor found '+unused.length+' asset file'+(unused.length===1?'':'s')+' with no explicit reference in the conference files.\n\n'+preview+'\n\nProtected metadata files such as .gitkeep, README.md and IMAGE_CREDITS.md are never included. Remove these unused assets?', 'Remove '+unused.length+' unused', {danger:true});
+      if (!ok) return;
+      let removed = 0;
+      for (const path of unused) if (await removeAsset(path,{skipConfirm:true,silent:true,references:[]})) removed += 1;
+      await loadAssets();
+      log('info','assets.cleaned',{found:unused.length,removed});
+      toast('Removed '+removed+' unused asset'+(removed===1?'':'s')+'.','success');
+    } catch (error) {
+      log('error','assets.clean_failed',{message:error.message,stack:error.stack||''});
+      toast('Could not clean unused assets: '+error.message,'error');
+    } finally {
+      if (buttonEl) { buttonEl.disabled = !state.config; buttonEl.textContent = oldLabel || 'Clean unused'; }
+    }
+  }
+
   async function handleAddOrReplaceAsset() {
     const file = els.assetFileInput.files && els.assetFileInput.files[0];
     els.assetFileInput.value = '';
@@ -3396,11 +3536,33 @@
     try {
       target = normalizeProjectPath(target);
       if (!target.startsWith('assets/')) throw new Error('Asset path must be inside assets/');
-      const result = await writeProjectBlob(target, file);
-      els.assetTargetPath.value = target;
+      const existing = state.assets.find((asset)=>asset.path===target);
+      let finalTarget = target;
+      let oldTarget = '';
+      if (existing) {
+        oldTarget = target;
+        const oldExt = extensionOf(target), newExt = extensionOf(file.name);
+        if (oldExt && newExt && oldExt !== newExt) {
+          finalTarget = target.replace(/\.[^/.]+$/, '') + '.' + newExt;
+          const conflict = state.assets.some((asset)=>asset.path===finalTarget && asset.path!==oldTarget);
+          if (conflict) {
+            const overwrite = await totemConfirm('Replace existing asset', 'The new file type changes the asset path to '+finalTarget+', but that file already exists. Replace it?', 'Replace', {danger:true});
+            if (!overwrite) return;
+          }
+        }
+      }
+      const result = await writeProjectBlob(finalTarget, file);
+      let updatedRefs = 0;
+      if (oldTarget && finalTarget !== oldTarget) {
+        updatedRefs = await replaceAssetReferences(oldTarget, finalTarget);
+        await deleteProjectPath(oldTarget);
+      }
+      els.assetTargetPath.value = finalTarget;
       await loadAssets();
-      log('info', 'asset.' + result, { path: target, bytes: file.size });
-      toast(result === 'saved' ? 'Asset saved: ' + target : 'Asset staged for ZIP export: ' + target, 'success');
+      if (state.activeView === 'documents') renderDocuments();
+      log('info', 'asset.' + result, { path: finalTarget, replaced: oldTarget || null, updated_references: updatedRefs, bytes: file.size });
+      const suffix = oldTarget && finalTarget !== oldTarget ? ' File type changed; '+updatedRefs+' reference'+(updatedRefs===1?'':'s')+' updated.' : '';
+      toast((result === 'saved' ? 'Asset saved: ' : 'Asset staged for ZIP export: ') + finalTarget + suffix, 'success');
     } catch (error) {
       log('error', 'asset.write_failed', { path: target, message: error.message });
       toast('Could not write asset: ' + error.message, 'error');
@@ -3518,11 +3680,11 @@
       await walk(state.projectHandle, '');
     } else {
       state.memoryFiles.forEach((file, key) => {
-        if (!key.startsWith(state.projectPrefix)) return;
+        if (!key.startsWith(state.projectPrefix) || state.memoryDeleted.has(key)) return;
         const path = key.slice(state.projectPrefix.length); if (path) map.set(path, file);
       });
       state.memoryOverrides.forEach((blob, key) => {
-        if (!key.startsWith(state.projectPrefix)) return;
+        if (!key.startsWith(state.projectPrefix) || state.memoryDeleted.has(key)) return;
         const path = key.slice(state.projectPrefix.length); if (path) map.set(path, blob);
       });
     }
@@ -3565,6 +3727,7 @@
         state.projectPrefix='';
         state.memoryFiles.clear();
         state.memoryOverrides.clear();
+        state.memoryDeleted.clear();
         state.projects=await discoverFsProjects(root);
         updateWorkspaceUi();
         populateProjectPicker();
@@ -3916,6 +4079,9 @@
     cfg.signature_columns = Number(cfg.signature_columns) === 1 ? 1 : 2;
     if (cfg.center_logo == null) cfg.center_logo = getConfig('assets.logo','');
     if (cfg.stamp_logo == null) cfg.stamp_logo = '';
+    if (!Number.isFinite(Number(cfg.center_logo_width_mm))) cfg.center_logo_width_mm = 44;
+    if (!Number.isFinite(Number(cfg.center_logo_offset_x_mm))) cfg.center_logo_offset_x_mm = 0;
+    if (!Number.isFinite(Number(cfg.center_logo_offset_y_mm))) cfg.center_logo_offset_y_mm = 0;
     cfg.page_margin_mm = 20;
     if (!Array.isArray(cfg.signatures)) cfg.signatures = [];
     if (!cfg.signatures.length) cfg.signatures.push({title:'Conference Chairman',name:'',affiliation:''},{title:'Scientific Chairman',name:'',affiliation:''});
@@ -3946,7 +4112,7 @@
     const organizerAddress=getConfig('organizer.address',getConfig('organization.address',getConfig('mifp.address','Via Appia Nuova 31, 00040 Marino, RM - Italy')));
     const phone=getConfig('conference.phone',getConfig('organizer.phone',getConfig('organization.phone','')));
     const email=getConfig('conference.email',getConfig('organizer.email',getConfig('organization.email','')));
-    return {shortName,badgeName,fullName,location,badgeLocation,date,organizerPath,confPath,badgeFooterPath:String(badgeCfg.footer_logo||''),certificateCenterPath:String(signatureCfg.center_logo||confPath||''),certificateStampPath:String(signatureCfg.stamp_logo||''),certificateMarginMm:20,signatures,signatureColumns:signatureCfg.signature_columns,accent:palette.primary||'#b5122b',organizerAddress,phone,email};
+    return {shortName,badgeName,fullName,location,badgeLocation,date,organizerPath,confPath,badgeFooterPath:String(badgeCfg.footer_logo||''),certificateCenterPath:String(signatureCfg.center_logo||confPath||''),certificateStampPath:String(signatureCfg.stamp_logo||''),certificateMarginMm:20,certificateCenterLogoWidthMm:Number(signatureCfg.center_logo_width_mm)||44,certificateCenterLogoOffsetXmm:Number(signatureCfg.center_logo_offset_x_mm)||0,certificateCenterLogoOffsetYmm:Number(signatureCfg.center_logo_offset_y_mm)||0,signatures,signatureColumns:signatureCfg.signature_columns,accent:palette.primary||'#b5122b',organizerAddress,phone,email};
   }
 
   function loadImage(url) { return new Promise((resolve)=>{if(!url){resolve(null);return;}const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>resolve(null);img.src=url;}); }
@@ -4162,6 +4328,37 @@
     refreshVisual();return {node:field,select,refresh:refreshVisual};
   }
 
+  function certificateLogoPlacementEditor(cfg, onChange) {
+    const box=div('certificate-logo-placement');
+    const title=div('certificate-logo-placement-head');
+    title.innerHTML='<div><b>Certificate logo position & size</b><span>Fine adjustment for the logo below the signatures.</span></div>';
+    const grid=div('certificate-logo-placement-grid');
+    const widthLabel=document.createElement('label');widthLabel.textContent='Width (mm)';const width=document.createElement('input');width.type='number';width.min='12';width.max='100';width.step='1';width.value=String(cfg.center_logo_width_mm||44);widthLabel.append(width);
+    const xLabel=document.createElement('label');xLabel.textContent='Horizontal offset (mm)';const x=document.createElement('input');x.type='number';x.min='-60';x.max='60';x.step='1';x.value=String(cfg.center_logo_offset_x_mm||0);xLabel.append(x);
+    const yLabel=document.createElement('label');yLabel.textContent='Vertical offset (mm)';const y=document.createElement('input');y.type='number';y.min='-35';y.max='20';y.step='1';y.value=String(cfg.center_logo_offset_y_mm||0);yLabel.append(y);
+    grid.append(widthLabel,xLabel,yLabel);
+    const actions=div('certificate-logo-placement-actions');
+    const smaller=button('− Smaller','button ghost'),larger=button('+ Larger','button ghost'),left=button('← 1 mm','button ghost'),right=button('1 mm →','button ghost'),up=button('↑ 1 mm','button ghost'),down=button('↓ 1 mm','button ghost'),center=button('Center on page','button');
+    actions.append(smaller,larger,left,right,up,down,center);
+    function apply() {
+      cfg.center_logo_width_mm=Math.max(12,Math.min(100,Number(width.value)||44));
+      cfg.center_logo_offset_x_mm=Math.max(-60,Math.min(60,Number(x.value)||0));
+      cfg.center_logo_offset_y_mm=Math.max(-35,Math.min(20,Number(y.value)||0));
+      width.value=String(cfg.center_logo_width_mm);x.value=String(cfg.center_logo_offset_x_mm);y.value=String(cfg.center_logo_offset_y_mm);
+      syncStructuredYaml('documents.certificate_logo_layout',{width_mm:cfg.center_logo_width_mm,offset_x_mm:cfg.center_logo_offset_x_mm,offset_y_mm:cfg.center_logo_offset_y_mm});
+      if(typeof onChange==='function')onChange(60);
+    }
+    [width,x,y].forEach((input)=>input.addEventListener('change',apply));
+    smaller.addEventListener('click',()=>{width.value=String((Number(width.value)||44)-2);apply();});
+    larger.addEventListener('click',()=>{width.value=String((Number(width.value)||44)+2);apply();});
+    left.addEventListener('click',()=>{x.value=String((Number(x.value)||0)-1);apply();});
+    right.addEventListener('click',()=>{x.value=String((Number(x.value)||0)+1);apply();});
+    up.addEventListener('click',()=>{y.value=String((Number(y.value)||0)-1);apply();});
+    down.addEventListener('click',()=>{y.value=String((Number(y.value)||0)+1);apply();});
+    center.addEventListener('click',()=>{x.value='0';apply();});
+    box.append(title,grid,actions);return box;
+  }
+
   function renderCertificatePanel() {
     const optsState=state.documentOptions.certificates,cfgState=ensureCertificateSignatureConfig();
     const panel=div('panel document-panel certificate-document-panel');const h=document.createElement('div');h.className='document-panel-head';h.innerHTML='<div><div class="eyebrow">A4 · 20 mm white border</div><h2>Certificates</h2><p>Stable automatic preview; People selection affects export only.</p></div>';panel.append(h);
@@ -4169,6 +4366,7 @@
     const pl=document.createElement('label');pl.textContent='Presentation details';const ps=document.createElement('select');[['true','Include when a title is found'],['false','Attendance only']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ps.append(o);});ps.value=optsState.includePresentation!==false?'true':'false';pl.append(ps);
     const centerField=certificateAssetField('Logo below signatures',cfgState.center_logo||getConfig('assets.logo',''),true,['documents','certificates','center_logo']);const stampField=certificateAssetField('Stamp · centered below right signature',cfgState.stamp_logo||'',true,['documents','certificates','stamp_logo']);
     cfg.append(pl,centerField.node,stampField.node);panel.append(cfg);
+    panel.append(certificateLogoPlacementEditor(cfgState,scheduleRefresh));
     panel.append(certificateSignatureEditor(scheduleRefresh));
 
     const previewSection=div('document-section document-preview-section');const previewHead=div('document-section-head');previewHead.innerHTML='<div><b>Preview</b><span>Automatic sample from People. Typing no longer clears or rebuilds the preview container.</span></div>';

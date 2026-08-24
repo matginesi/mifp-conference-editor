@@ -294,6 +294,6 @@ Copyright © 2026 Matteo Ginesi.
 
 # Current editor version
 
-**1.22.17**
+**1.22.18**
 
 Recent changes include direct conference ZIP import, safer ZIP path validation, improved certificate logo/stamp placement and sizing, more robust certificate image loading, stable badge/certificate asset pickers, responsive badge controls, and PHP compatibility fixes for the registration form.
