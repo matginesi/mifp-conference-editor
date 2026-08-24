@@ -294,6 +294,19 @@ Copyright © 2026 Matteo Ginesi.
 
 # Current editor version
 
+**1.22.21**
+
+- Badges: added a dedicated bottom logo strip with 1, 2 or 3 logos centered as a group.
+- Badge logo strip is available in rendered PDF/DOCX previews and exports; legacy filled template keeps Logo 1.
+- Certificates: increased PLMCN-2027 content margins to 26 mm.
+- Certificates: moved the two signature columns slightly farther toward the page edges.
+
+**1.22.20**
+
+- Certificates: removed signature lines entirely.
+- Certificates: replaced the heavy double frame with a single subtle hairline border.
+- Bundled certificate DOCX template updated to match.
+
 **1.22.18**
 
 Recent changes include direct conference ZIP import, safer ZIP path validation, improved certificate logo/stamp placement and sizing, more robust certificate image loading, stable badge/certificate asset pickers, responsive badge controls, and PHP compatibility fixes for the registration form.

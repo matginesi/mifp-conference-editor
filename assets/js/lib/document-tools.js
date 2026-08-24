@@ -86,8 +86,17 @@
     centerText(ctx,first,X+pad,Y+H*.565,W-pad*2,firstSize,'800','#08090a',FONT_SANS);
     centerText(ctx,last,X+pad,Y+H*.660,W-pad*2,lastSize,'800','#08090a',FONT_SANS);
     centeredWrapped(ctx,String(p.Affiliation||''),X+pad,Y+H*.772,W-pad*2,Math.round(m*.039),Math.round(m*.035),'500','#30353a',2,FONT_SANS);
-    centerText(ctx,String(p.Country||''),X+pad,Y+H*.832,W-pad*2,Math.round(m*.032),'450','#51575c',FONT_SANS);
-    if(v.badgeFooterLogo)drawImageContain(ctx,v.badgeFooterLogo,X+W*.30,Y+H*.865,W*.40,H*.105);
+    centerText(ctx,String(p.Country||''),X+pad,Y+H*.822,W-pad*2,Math.round(m*.032),'450','#51575c',FONT_SANS);
+
+    // Dedicated bottom strip: 1, 2 or 3 logos centered as a single group.
+    const stripTop=Y+H*.852,stripH=H*.148;
+    ctx.fillStyle='#fafbfc';ctx.fillRect(X,stripTop,W,stripH);
+    ctx.strokeStyle='#d9dde1';ctx.lineWidth=Math.max(1,s*.16);ctx.beginPath();ctx.moveTo(X+pad,stripTop);ctx.lineTo(X+W-pad,stripTop);ctx.stroke();
+    const logos=(Array.isArray(v.badgeBottomLogos)?v.badgeBottomLogos:[]).filter(Boolean).slice(0,3),n=logos.length;
+    if(n){
+      const groupRatio=n===1?.46:n===2?.72:.86,gapRatio=n===1?0:n===2?.045:.032,groupW=W*groupRatio,gap=W*gapRatio,cellW=(groupW-gap*(n-1))/n,startX=X+(W-groupW)/2,logoY=stripTop+stripH*.13,logoH=stripH*.74;
+      logos.forEach((logo,index)=>drawImageContain(ctx,logo,startX+index*(cellW+gap),logoY,cellW,logoH));
+    }
     ctx.restore();
   }
 
@@ -96,70 +105,93 @@
     people.forEach((p,index)=>{
       const c=canvasA4(scale),ctx=c.getContext('2d'),S=scale,W=c.width,H=c.height;
       ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
-      const margin=Math.max(20,Number(visuals.certificateMarginMm)||20),inner=margin+1.15,left=margin+4,right=210-margin-4,contentW=(right-left)*S;
-      // 20 mm white page border; restrained double rule inside the printable field.
-      ctx.strokeStyle='#16191c';ctx.lineWidth=.26*S;ctx.strokeRect(margin*S,margin*S,W-2*margin*S,H-2*margin*S);
-      ctx.strokeStyle='#a9afb5';ctx.lineWidth=.10*S;ctx.strokeRect(inner*S,inner*S,W-2*inner*S,H-2*inner*S);
 
-      drawImageContain(ctx,visuals.organizerLogo,left*S,23*S,31*S,15*S);
-      const contact=[];if(visuals.organizerAddress)contact.push(String(visuals.organizerAddress));if(visuals.phone)contact.push('Phone: '+String(visuals.phone));if(visuals.email)contact.push('Email: '+String(visuals.email));rightLines(ctx,contact,right*S,24*S,2.55*S,3.7*S,'#444a50',FONT_SANS);
-      ctx.strokeStyle='#63aa3b';ctx.lineWidth=.34*S;ctx.beginPath();ctx.moveTo(left*S,42*S);ctx.lineTo(right*S,42*S);ctx.stroke();
+      // Keep a true 20 mm content margin, while the decorative frame sits near the page edge
+      // like the historical MIFP certificates. This separates printable whitespace from ornament.
+      const margin=Math.max(20,Number(visuals.certificateMarginMm)||26),left=margin,right=210-margin,contentW=(right-left)*S;
+      const frameOuter=6.0,frameInner=7.15;
+      ctx.save();
+      ctx.strokeStyle='#111315';
+      ctx.lineWidth=.28*S;
+      ctx.strokeRect(frameOuter*S,frameOuter*S,W-2*frameOuter*S,H-2*frameOuter*S);
+      ctx.lineWidth=.18*S;
+      ctx.strokeRect(frameInner*S,frameInner*S,W-2*frameInner*S,H-2*frameInner*S);
+      ctx.restore();
 
-      centerText(ctx,'CERTIFICATE OF ATTENDANCE',left*S,54*S,contentW,7.15*S,'800','#111315',FONT_SANS);
-      centerText(ctx,'TO WHOM IT MAY CONCERN',left*S,67*S,contentW,3.55*S,'450','#474d52',FONT_SANS);
-      centerText(ctx,'THE UNDERSIGNED DOCUMENT CERTIFIES THAT',left*S,73.4*S,contentW,3.35*S,'450','#474d52',FONT_SANS);
+      // Institutional header: logo left, contacts right, green separator.
+      drawImageContain(ctx,visuals.organizerLogo,left*S,10.2*S,34*S,18*S);
+      const contact=[];
+      if(visuals.organizerAddress)contact.push(String(visuals.organizerAddress));
+      if(visuals.phone)contact.push('Phone: '+String(visuals.phone));
+      if(visuals.email)contact.push('Email: '+String(visuals.email));
+      rightLines(ctx,contact,right*S,12.5*S,2.9*S,4.15*S,'#202428',FONT_SANS);
+      ctx.strokeStyle='#63aa3b';ctx.lineWidth=.40*S;ctx.beginPath();ctx.moveTo(left*S,33.4*S);ctx.lineTo(right*S,33.4*S);ctx.stroke();
+
+      // Main hierarchy follows the supplied historical certificates.
+      centerText(ctx,'CERTIFICATE OF ATTENDANCE',left*S,44.5*S,contentW,7.15*S,'800','#08090a',FONT_SANS);
+      centerText(ctx,'TO WHOM IT MAY CONCERN',left*S,59.8*S,contentW,3.65*S,'450','#24282c',FONT_SANS);
+      centerText(ctx,'THE UNDERSIGNED DOCUMENT CERTIFIES THAT',left*S,66.7*S,contentW,3.55*S,'450','#24282c',FONT_SANS);
+
       const full=[p['First Name'],p['Last Name']].filter(Boolean).join(' ').trim();
-      centerText(ctx,full,left*S,89*S,contentW,fontFit(ctx,full,contentW-8*S,8.5*S,5.7*S,'800',FONT_SANS),'800','#08090a',FONT_SANS);
-      centerText(ctx,'Participated at the',left*S,105*S,contentW,3.95*S,'450','#3d4348',FONT_SANS);
+      centerText(ctx,full,left*S,81.8*S,contentW,fontFit(ctx,full,contentW-6*S,8.5*S,5.7*S,'800',FONT_SANS),'800','#08090a',FONT_SANS);
+      centerText(ctx,'Participated at the',left*S,100.3*S,contentW,3.95*S,'450','#2e3337',FONT_SANS);
 
-      ctx.font=fontDecl('800',5.25*S,FONT_SANS);const fullLines=wrapLines(ctx,visuals.fullName,contentW-12*S,2),fullY=117*S;
-      fullLines.forEach((line,i)=>centerText(ctx,line,(left+6)*S,fullY+i*6.0*S,(right-left-12)*S,5.25*S,'800','#141719',FONT_SANS));
-      const shortY=fullY+Math.max(1,fullLines.length)*6.0*S+.7*S;centerText(ctx,visuals.shortName,left*S,shortY,contentW,4.7*S,'800','#202428',FONT_SANS);
+      const certificateFullName=String(visuals.certificateFullName||visuals.fullName||'');
+      let conferenceFont=5.15*S,fullLines=[];
+      while(conferenceFont>=4.15*S){ctx.font=fontDecl('800',conferenceFont,FONT_SANS);fullLines=wrapLines(ctx,certificateFullName,contentW-2*S,0);if(fullLines.length<=2)break;conferenceFont-=.20*S;}
+      if(!fullLines.length)fullLines=[''];
+      const fullY=113.2*S,conferenceLineGap=5.8*S;
+      fullLines.slice(0,3).forEach((line,i)=>centerText(ctx,line,(left+1)*S,fullY+i*conferenceLineGap,(right-left-2)*S,conferenceFont,'800','#111315',FONT_SANS));
+      const shortY=fullY+Math.max(1,Math.min(3,fullLines.length))*conferenceLineGap+.9*S;
+      centerText(ctx,visuals.certificateShortName||visuals.shortName,left*S,shortY,contentW,4.65*S,'800','#171a1d',FONT_SANS);
 
-      const pres=p.__presentation||{};let bodyEnd=145;
+      const pres=p.__presentation||{};let bodyEnd=shortY/S+5;
       if(opts.includePresentation!==false&&pres.title){
         const presentationLine=String(pres.label||pres.prefix||'Presentation').trim();
-        if(presentationLine)centerText(ctx,presentationLine,left*S,149*S,contentW,3.45*S,'500','#474d52',FONT_SANS);
-        ctx.font=fontDecl('750',4.7*S,FONT_SANS);const titleLines=wrapLines(ctx,pres.title,contentW-14*S,3);
-        titleLines.forEach((line,i)=>centerText(ctx,line,(left+7)*S,(159.5+i*5.35)*S,(right-left-14)*S,4.7*S,'750','#141719',FONT_SANS));
-        bodyEnd=159.5+Math.max(1,titleLines.length)*5.35;
+        if(presentationLine)centerText(ctx,presentationLine,left*S,143.5*S,contentW,3.45*S,'450','#30353a',FONT_SANS);
+        let presentationFont=4.55*S,titleLines=[];
+        while(presentationFont>=3.65*S){ctx.font=fontDecl('750',presentationFont,FONT_SANS);titleLines=wrapLines(ctx,pres.title,contentW-4*S,0);if(titleLines.length<=3)break;presentationFont-=.18*S;}
+        titleLines.slice(0,4).forEach((line,i)=>centerText(ctx,line,(left+2)*S,(155.7+i*5.45)*S,(right-left-4)*S,presentationFont,'750','#111315',FONT_SANS));
+        bodyEnd=155.7+Math.max(1,Math.min(4,titleLines.length))*5.45;
       }
 
-      const locY=Math.max(181,bodyEnd+13.2);
-      centerText(ctx,'Held at '+String(visuals.location||''),left*S,locY*S,contentW,3.85*S,'450','#3e4449',FONT_SANS);
-      centerText(ctx,String(visuals.date||''),left*S,(locY+6.2)*S,contentW,3.85*S,'450','#3e4449',FONT_SANS);
-      centerText(ctx,'On behalf of the Organizing and Scientific Committee',left*S,(locY+17.6)*S,contentW,3.35*S,'450','#444a50',FONT_SANS);
+      // The historical layout deliberately leaves a broad quiet area before venue/date.
+      const locY=Math.max(190.5,bodyEnd+16.5);
+      centerText(ctx,'Held at '+String(visuals.certificateLocation||visuals.location||''),left*S,locY*S,contentW,3.85*S,'450','#292e32',FONT_SANS);
+      centerText(ctx,String(visuals.date||''),left*S,(locY+6.4)*S,contentW,3.85*S,'450','#292e32',FONT_SANS);
+      centerText(ctx,'On behalf of the Organizing and Scientific Committee',left*S,(locY+18.0)*S,contentW,3.35*S,'450','#30353a',FONT_SANS);
 
       const signatures=Array.isArray(visuals.signatures)?visuals.signatures.filter(x=>x&&(x.title||x.name||x.affiliation)):[],cols=Math.max(1,Math.min(2,Number(visuals.signatureColumns)||2));
-      // Keep the signature area visibly above the footer so there is room for handwritten signatures.
-      // The event logo stays centered below; the stamp sits larger at bottom-right below the right signature.
-      const logoTop=257.8,logoH=16.0,signatureEnd=242.5;
+      const signatureTop=Math.max(locY+28.5,226.5);
       if(signatures.length){
-        const rows=Math.ceil(signatures.length/cols),gapX=11*S,outer=left*S,totalW=(right-left)*S,cellW=(totalW-gapX*(cols-1))/cols;
-        const compact=rows>2,blockH=(compact?15.0:18.0),rowGap=(compact?2.5:5.0),totalH=rows*blockH+(rows-1)*rowGap,startY=Math.max(locY+24.5,signatureEnd-totalH);
+        // Signature columns deliberately sit farther toward the page edges than the main text.
+        const signatureOuterMm=12,signatureRightMm=198,signatureGapMm=22;
+        const rows=Math.ceil(signatures.length/cols),gapX=signatureGapMm*S,outer=signatureOuterMm*S,totalW=(signatureRightMm-signatureOuterMm)*S,cellW=(totalW-gapX*(cols-1))/cols;
+        const compact=rows>2,blockH=(compact?13.0:16.0),rowGap=(compact?2.4:4.0);
         signatures.forEach((sig,i)=>{
-          const col=i%cols,row=Math.floor(i/cols),x=outer+col*(cellW+gapX),top=startY+row*(blockH+rowGap),title=String(sig.title||'').trim(),name=String(sig.name||'').trim(),aff=String(sig.affiliation||'').trim();
-          const nameY=top+2.2,affY=top+5.4,titleY=top+8.2,ruleY=top+(compact?13.3:15.5);
-          if(name)centerText(ctx,name,x,nameY*S,cellW,fontFit(ctx,name,cellW*.91,3.45*S,2.45*S,'750',FONT_SANS),'750','#171a1d',FONT_SANS);
-          if(aff)centerText(ctx,aff,x,affY*S,cellW,fontFit(ctx,aff,cellW*.91,2.8*S,2.0*S,'450',FONT_SANS),'450','#4d5358',FONT_SANS);
-          if(title)centerText(ctx,title,x,titleY*S,cellW,fontFit(ctx,title,cellW*.91,2.5*S,1.85*S,'600',FONT_SANS),'600','#62686d',FONT_SANS);
-          ctx.strokeStyle='#72787d';ctx.lineWidth=.17*S;ctx.beginPath();ctx.moveTo(x+cellW*.10,ruleY*S);ctx.lineTo(x+cellW*.90,ruleY*S);ctx.stroke();
+          const col=i%cols,row=Math.floor(i/cols),x=outer+col*(cellW+gapX),top=signatureTop+row*(blockH+rowGap),title=String(sig.title||'').trim(),name=String(sig.name||'').trim(),aff=String(sig.affiliation||'').trim();
+          // Match the reference: role first and bold, then name, then affiliation. No signature rule.
+          if(title)centerText(ctx,title,x,(top+1.5)*S,cellW,fontFit(ctx,title,cellW*.94,3.25*S,2.20*S,'800',FONT_SANS),'800','#111315',FONT_SANS);
+          if(name)centerText(ctx,name,x,(top+6.0)*S,cellW,fontFit(ctx,name,cellW*.94,3.15*S,2.25*S,'450',FONT_SANS),'450','#202428',FONT_SANS);
+          if(aff)centerText(ctx,aff,x,(top+10.1)*S,cellW,fontFit(ctx,aff,cellW*.94,2.75*S,2.0*S,'450',FONT_SANS),'450','#343a3f',FONT_SANS);
         });
       }
 
+      // Event artwork is centered below the signatures, with the existing user controls preserved.
       const centerLogoW=Math.max(12,Math.min(100,Number(visuals.certificateCenterLogoWidthMm)||44.0));
       const centerLogoX=105+Math.max(-60,Math.min(60,Number(visuals.certificateCenterLogoOffsetXmm)||0));
-      const centerLogoY=logoTop+Math.max(-35,Math.min(20,Number(visuals.certificateCenterLogoOffsetYmm)||0));
-      const centerLogoH=Math.max(8,logoH*(centerLogoW/44.0));
+      const centerLogoY=246.0+Math.max(-35,Math.min(20,Number(visuals.certificateCenterLogoOffsetYmm)||0));
+      const centerLogoH=Math.min(44,Math.max(18,centerLogoW*.85));
       drawImageContain(ctx,visuals.certificateCenterLogo,(centerLogoX-centerLogoW/2)*S,centerLogoY*S,centerLogoW*S,centerLogoH*S);
-      const stampSize=30.0,signatureGapMm=11.0,signatureCellMm=((right-left)-signatureGapMm)/2,rightSignatureCenter=left+signatureCellMm+signatureGapMm+signatureCellMm/2;
-      drawImageContain(ctx,visuals.certificateStamp,(rightSignatureCenter-stampSize/2)*S,245.5*S,stampSize*S,stampSize*S);
+
+      // Optional stamp remains centered below the right-hand signature block.
+      const stampSize=28.0,signatureOuterMm=12.0,signatureRightMm=198.0,signatureGapMm=22.0,signatureCellMm=((signatureRightMm-signatureOuterMm)-signatureGapMm)/2,rightSignatureCenter=signatureOuterMm+signatureCellMm+signatureGapMm+signatureCellMm/2;
+      drawImageContain(ctx,visuals.certificateStamp,(rightSignatureCenter-stampSize/2)*S,244.5*S,stampSize*S,stampSize*S);
 
       pages.push(c);emitProgress(onProgress,Math.round(((index+1)/Math.max(1,people.length))*100),'Rendering certificate '+(index+1)+' / '+people.length);
     });
     return pages;
   }
-
 
 
   global.DocumentTools=Object.freeze({A4,docxPlaceholders,fillDocxTemplate,buildPdfFromCanvases,buildDocxFromCanvases,badgeLayout,renderBadgePages,renderCertificatePages});

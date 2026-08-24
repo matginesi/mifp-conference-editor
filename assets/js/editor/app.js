@@ -2,7 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[MIFP-EDITOR]';
-  const EDITOR_VERSION = '1.22.18';
+  const EDITOR_VERSION = '1.22.21';
   const supportsFsAccess = typeof window.showDirectoryPicker === 'function';
   const MAX_LOGS = 500;
   const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','avif']);
@@ -4082,7 +4082,8 @@
     if (!Number.isFinite(Number(cfg.center_logo_width_mm))) cfg.center_logo_width_mm = 44;
     if (!Number.isFinite(Number(cfg.center_logo_offset_x_mm))) cfg.center_logo_offset_x_mm = 0;
     if (!Number.isFinite(Number(cfg.center_logo_offset_y_mm))) cfg.center_logo_offset_y_mm = 0;
-    cfg.page_margin_mm = 20;
+    if (!Number.isFinite(Number(cfg.page_margin_mm))) cfg.page_margin_mm = 26;
+    cfg.page_margin_mm = Math.max(20,Math.min(36,Number(cfg.page_margin_mm)||26));
     if (!Array.isArray(cfg.signatures)) cfg.signatures = [];
     if (!cfg.signatures.length) cfg.signatures.push({title:'Conference Chairman',name:'',affiliation:''},{title:'Scientific Chairman',name:'',affiliation:''});
     cfg.signatures = cfg.signatures.map(item => item && typeof item === 'object' ? item : {title:String(item||''),name:'',affiliation:''});
@@ -4094,6 +4095,12 @@
     if(!state.config.documents.badges||typeof state.config.documents.badges!=='object')state.config.documents.badges={};
     const cfg=state.config.documents.badges;
     if(cfg.footer_logo==null)cfg.footer_logo='';
+    if(!Array.isArray(cfg.bottom_logos))cfg.bottom_logos=cfg.footer_logo?[String(cfg.footer_logo)]:[];
+    cfg.bottom_logos=cfg.bottom_logos.slice(0,3).map(value=>String(value||''));
+    if(!Number.isFinite(Number(cfg.bottom_logo_count)))cfg.bottom_logo_count=cfg.bottom_logos.filter(Boolean).length;
+    cfg.bottom_logo_count=Math.max(0,Math.min(3,Math.floor(Number(cfg.bottom_logo_count)||0)));
+    while(cfg.bottom_logos.length<cfg.bottom_logo_count)cfg.bottom_logos.push('');
+    cfg.footer_logo=cfg.bottom_logos[0]||''; // legacy filled badge template uses the first strip logo
     return cfg;
   }
 
@@ -4101,8 +4108,12 @@
     const shortName=getConfig('conference.acronym',getConfig('site.short_name',state.projectName||'Conference'));
     const fullName=getConfig('conference.full_name',getConfig('site.title',shortName));
     const badgeName=getConfig('site.title',state.projectName||shortName||'Conference');
+    const certificateShortName=String(getConfig('site.title',shortName)||shortName||'').trim();
+    let certificateFullName=String(fullName||'').trim();
+    if(certificateShortName&&certificateFullName.toLowerCase().startsWith(certificateShortName.toLowerCase()))certificateFullName=certificateFullName.slice(certificateShortName.length).replace(/^[\s—–-]+/,'').trim();
     const location=[getConfig('conference.venue',''),getConfig('conference.city',''),getConfig('conference.country','')].filter(Boolean).join(', ');
     const badgeLocation=[getConfig('conference.city',''),getConfig('conference.country','')].filter(Boolean).join(', ');
+    const certificateLocation=[getConfig('conference.city',''),getConfig('conference.country','')].filter(Boolean).join(' - ');
     const date=getConfig('conference.date_label',[getConfig('conference.start_date',''),getConfig('conference.end_date','')].filter(Boolean).join(' - '));
     const organizerPath=getConfig('assets.organizer_logo',''); const confPath=getConfig('assets.logo','');
     const badgeCfg=ensureBadgeDocumentConfig();
@@ -4112,7 +4123,9 @@
     const organizerAddress=getConfig('organizer.address',getConfig('organization.address',getConfig('mifp.address','Via Appia Nuova 31, 00040 Marino, RM - Italy')));
     const phone=getConfig('conference.phone',getConfig('organizer.phone',getConfig('organization.phone','')));
     const email=getConfig('conference.email',getConfig('organizer.email',getConfig('organization.email','')));
-    return {shortName,badgeName,fullName,location,badgeLocation,date,organizerPath,confPath,badgeFooterPath:String(badgeCfg.footer_logo||''),certificateCenterPath:String(signatureCfg.center_logo||confPath||''),certificateStampPath:String(signatureCfg.stamp_logo||''),certificateMarginMm:20,certificateCenterLogoWidthMm:Number(signatureCfg.center_logo_width_mm)||44,certificateCenterLogoOffsetXmm:Number(signatureCfg.center_logo_offset_x_mm)||0,certificateCenterLogoOffsetYmm:Number(signatureCfg.center_logo_offset_y_mm)||0,signatures,signatureColumns:signatureCfg.signature_columns,accent:palette.primary||'#b5122b',organizerAddress,phone,email};
+    const badgeBottomLogoCount=Math.max(0,Math.min(3,Number(badgeCfg.bottom_logo_count)||0));
+    const badgeBottomLogoPaths=(Array.isArray(badgeCfg.bottom_logos)?badgeCfg.bottom_logos:[]).slice(0,badgeBottomLogoCount).map(value=>String(value||''));
+    return {shortName,badgeName,fullName,certificateShortName,certificateFullName,location,badgeLocation,certificateLocation,date,organizerPath,confPath,badgeFooterPath:String(badgeBottomLogoPaths[0]||badgeCfg.footer_logo||''),badgeBottomLogoCount,badgeBottomLogoPaths,certificateCenterPath:String(signatureCfg.center_logo||confPath||''),certificateStampPath:String(signatureCfg.stamp_logo||''),certificateMarginMm:Number(signatureCfg.page_margin_mm)||26,certificateCenterLogoWidthMm:Number(signatureCfg.center_logo_width_mm)||44,certificateCenterLogoOffsetXmm:Number(signatureCfg.center_logo_offset_x_mm)||0,certificateCenterLogoOffsetYmm:Number(signatureCfg.center_logo_offset_y_mm)||0,signatures,signatureColumns:signatureCfg.signature_columns,accent:palette.primary||'#b5122b',organizerAddress,phone,email};
   }
 
   function loadImage(url) { return new Promise((resolve)=>{if(!url){resolve(null);return;}const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>resolve(null);img.src=url;}); }
@@ -4139,14 +4152,15 @@
 
   async function documentVisualsWithImages(){
     const v=conferenceVisuals();
-    const [organizer,conference,badgeFooter,center,stamp]=await Promise.all([
+    const badgeLogoPaths=Array.isArray(v.badgeBottomLogoPaths)?v.badgeBottomLogoPaths.slice(0,3):[];
+    const [organizer,conference,center,stamp,badgeBottomLogos]=await Promise.all([
       loadDocumentAsset(v.organizerPath,'organizer logo'),
       loadDocumentAsset(v.confPath,'conference logo'),
-      loadDocumentAsset(v.badgeFooterPath,'badge footer logo'),
       loadDocumentAsset(v.certificateCenterPath,'certificate center logo'),
-      loadDocumentAsset(v.certificateStampPath,'certificate stamp')
+      loadDocumentAsset(v.certificateStampPath,'certificate stamp'),
+      Promise.all(badgeLogoPaths.map((path,index)=>loadDocumentAsset(path,'badge bottom logo '+(index+1))))
     ]);
-    v.organizerLogo=organizer;v.conferenceLogo=conference;v.badgeFooterLogo=badgeFooter;v.certificateCenterLogo=center||conference;v.certificateStamp=stamp;
+    v.organizerLogo=organizer;v.conferenceLogo=conference;v.badgeBottomLogos=badgeBottomLogos.filter(Boolean);v.badgeFooterLogo=v.badgeBottomLogos[0]||null;v.certificateCenterLogo=center||conference;v.certificateStamp=stamp;
     v.certificateStampReady=!v.certificateStampPath||Boolean(stamp);
     return v;
   }
@@ -4228,8 +4242,9 @@
     const gl=document.createElement('label');gl.textContent='Gap (mm)';const gi=document.createElement('input');gi.type='number';gi.min='0';gi.max='20';gi.step='.5';gi.value=String(optsState.gapMm);gl.append(gi);
     const cl=document.createElement('label');cl.textContent='Crop marks';const cs=document.createElement('select');[['true','Yes'],['false','No']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;cs.append(o);});cs.value=optsState.cutLines?'true':'false';cl.append(cs);
     const blankLabel=document.createElement('label');blankLabel.textContent='Blank badges';const blankInput=document.createElement('input');blankInput.type='number';blankInput.min='0';blankInput.max='200';blankInput.step='1';blankInput.value=String(Math.max(0,Number(optsState.blankCount)||0));blankLabel.append(blankInput);
-    const badgeCfg=ensureBadgeDocumentConfig();const footerField=certificateAssetField('Bottom logo / sponsor',badgeCfg.footer_logo||'',true,['documents','badges','footer_logo']);footerField.node.classList.add('badge-logo-field');
-    cfg.append(preset,wl,hl,ol,ml,gl,cl,blankLabel,footerField.node);panel.append(cfg);
+    const badgeCfg=ensureBadgeDocumentConfig();
+    cfg.append(preset,wl,hl,ol,ml,gl,cl,blankLabel);panel.append(cfg);
+    panel.append(badgeLogoStripEditor(badgeCfg,scheduleRefresh));
 
     const previewSection=div('document-section document-preview-section');
     const previewHead=div('document-section-head');previewHead.innerHTML='<div><b>Preview</b><span>Uses conference People automatically; it is independent from export selection.</span></div>';
@@ -4252,7 +4267,7 @@
     function scheduleRefresh(delay){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,delay==null?180:delay);}
     async function refresh(){const token=++state.documentPreviewToken.badges;const all=previewEntries(),layout=window.DocumentTools.badgeLayout(options(),all.length),page=clampPage(layout);summary.replaceChildren(div('',layout.cols+' × '+layout.rows+' · '+layout.perPage+' badges / A4'),div('',humanizeKey(layout.orientation)+' · '+layout.pageWidthMm+' × '+layout.pageHeightMm+' mm'),div('',all.length+' preview item'+(all.length===1?'':'s')+' · '+Math.max(1,layout.pages)+' page'+(layout.pages===1?'':'s')));status.classList.remove('hidden');preview.classList.add('is-updating');const start=(page-1)*layout.perPage,subset=all.slice(start,start+layout.perPage);const v=await documentVisualsWithImages();if(token!==state.documentPreviewToken.badges)return;const result=window.DocumentTools.renderBadgePages(subset,options(),v);if(token!==state.documentPreviewToken.badges)return;const c=result.pages[0];if(c){const stage=documentPreviewStage(c,'Badge sheet preview','A4 '+layout.orientation+' · page '+page+' / '+Math.max(1,layout.pages));preview.querySelector('.doc-preview-stage')?.remove();preview.append(stage);}status.classList.add('hidden');preview.classList.remove('is-updating');}
     function setPreset(){if(ps.value!=='custom'){const [w,h]=ps.value.split('x');wi.value=w;hi.value=h;mi.value='0';gi.value='0';}scheduleRefresh(40);}
-    ps.addEventListener('change',setPreset);[wi,hi,mi,gi,blankInput].forEach(el=>{el.addEventListener('input',()=>{updateExportMeta();scheduleRefresh();});el.addEventListener('change',()=>scheduleRefresh(40));});[cs,os].forEach(el=>el.addEventListener('change',()=>scheduleRefresh(40)));footerField.select.addEventListener('change',()=>{badgeCfg.footer_logo=footerField.select.value;syncStructuredYaml('documents.badges.footer_logo',{});scheduleRefresh(80);});pageInput.addEventListener('change',()=>scheduleRefresh(20));pageInput.addEventListener('input',()=>{optsState.previewPage=Math.max(1,Math.floor(Number(pageInput.value)||1));});
+    ps.addEventListener('change',setPreset);[wi,hi,mi,gi,blankInput].forEach(el=>{el.addEventListener('input',()=>{updateExportMeta();scheduleRefresh();});el.addEventListener('change',()=>scheduleRefresh(40));});[cs,os].forEach(el=>el.addEventListener('change',()=>scheduleRefresh(40)));pageInput.addEventListener('change',()=>scheduleRefresh(20));pageInput.addEventListener('input',()=>{optsState.previewPage=Math.max(1,Math.floor(Number(pageInput.value)||1));});
     async function pages(report){const entries=exportEntries();if(!entries.length)throw documentValidation('Select at least one person or add a blank badge.');report(5,'Loading conference assets');await nextPaint();const v=await documentVisualsWithImages();report(18,'Rendering badge sheets');await nextPaint();const result=window.DocumentTools.renderBadgePages(entries,options(),v,(n,label)=>report(18+n*.47,label));report(67,'Badge sheets rendered');return{canvases:result.pages,suffix:''};}
     pdf.addEventListener('click',()=>documentExportButton(pdf,progress,async(report)=>{const out=await pages(report);const blob=await window.DocumentTools.buildPdfFromCanvases(out.canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-badges.pdf',blob);}));
     docx.addEventListener('click',()=>documentExportButton(docx,progress,async(report)=>{const out=await pages(report);const blob=await window.DocumentTools.buildDocxFromCanvases(out.canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-badges.docx',blob);}));
@@ -4265,7 +4280,7 @@
     const cfg=ensureCertificateSignatureConfig();
     const wrap=div('certificate-signatures');
     const head=div('certificate-signatures-head');
-    const copy=document.createElement('div');copy.innerHTML='<b>Certificate signatures</b><span>Printed identity first, signature rule underneath, then clear vertical space before the next row.</span>';
+    const copy=document.createElement('div');copy.innerHTML='<b>Certificate signatures</b><span>Role, name and affiliation are printed in the historical MIFP style. No signature rule is drawn.</span>';
     const layoutLabel=document.createElement('label');layoutLabel.textContent='Per row';const layout=document.createElement('select');[['1','One'],['2','Two side by side']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;layout.append(o);});layout.value=String(cfg.signature_columns||2);layoutLabel.append(layout);
     const add=button('Add signature','button ghost');head.append(copy,layoutLabel,add);wrap.append(head);
     const list=div('certificate-signature-list');wrap.append(list);
@@ -4328,6 +4343,18 @@
     refreshVisual();return {node:field,select,refresh:refreshVisual};
   }
 
+  function badgeLogoStripEditor(cfg,onChange) {
+    const box=div('badge-logo-strip-config');
+    const head=div('badge-logo-strip-head');
+    const copy=document.createElement('div');copy.innerHTML='<b>Bottom logo strip</b><span>Choose 1, 2 or 3 logos. They are centered as one group in a dedicated strip at the bottom of every badge. Rendered PDF/DOCX supports all logos; the legacy filled template uses Logo 1.</span>';
+    const countLabel=document.createElement('label');countLabel.textContent='Logos';const count=document.createElement('select');[['0','None'],['1','1 · centered'],['2','2 · centered'],['3','3 · centered']].forEach(([value,label])=>{const option=document.createElement('option');option.value=value;option.textContent=label;count.append(option);});count.value=String(cfg.bottom_logo_count||0);countLabel.append(count);head.append(copy,countLabel);box.append(head);
+    const fields=div('badge-logo-strip-fields');box.append(fields);
+    const commit=(reason)=>{cfg.bottom_logo_count=Math.max(0,Math.min(3,Number(count.value)||0));while(cfg.bottom_logos.length<cfg.bottom_logo_count)cfg.bottom_logos.push('');cfg.bottom_logos=cfg.bottom_logos.slice(0,cfg.bottom_logo_count);cfg.footer_logo=cfg.bottom_logos[0]||'';syncStructuredYaml(reason||'documents.badges.bottom_logos',{});if(typeof onChange==='function')onChange(70);};
+    function renderFields(){fields.replaceChildren();const n=Math.max(0,Math.min(3,Number(count.value)||0));for(let i=0;i<n;i++){const field=certificateAssetField('Logo '+(i+1),cfg.bottom_logos[i]||'',true,['documents','badges','bottom_logos',i]);field.node.classList.add('badge-strip-logo-field');field.select.addEventListener('change',()=>{cfg.bottom_logos[i]=field.select.value||'';commit('documents.badges.bottom_logo_'+(i+1));});fields.append(field.node);}if(!n)fields.append(div('badge-logo-strip-empty','No bottom strip.'));}
+    count.addEventListener('change',()=>{const n=Math.max(0,Math.min(3,Number(count.value)||0));while(cfg.bottom_logos.length<n)cfg.bottom_logos.push('');cfg.bottom_logos=cfg.bottom_logos.slice(0,n);commit('documents.badges.bottom_logo_count');renderFields();});
+    renderFields();return box;
+  }
+
   function certificateLogoPlacementEditor(cfg, onChange) {
     const box=div('certificate-logo-placement');
     const title=div('certificate-logo-placement-head');
@@ -4361,7 +4388,7 @@
 
   function renderCertificatePanel() {
     const optsState=state.documentOptions.certificates,cfgState=ensureCertificateSignatureConfig();
-    const panel=div('panel document-panel certificate-document-panel');const h=document.createElement('div');h.className='document-panel-head';h.innerHTML='<div><div class="eyebrow">A4 · 20 mm white border</div><h2>Certificates</h2><p>Stable automatic preview; People selection affects export only.</p></div>';panel.append(h);
+    const panel=div('panel document-panel certificate-document-panel');const h=document.createElement('div');h.className='document-panel-head';h.innerHTML='<div><div class="eyebrow">A4 · 26 mm content margins · MIFP double frame</div><h2>Certificates</h2><p>Layout based on the historical MIFP certificates; People selection affects export only.</p></div>';panel.append(h);
     const cfg=div('doc-config-grid document-control-block');
     const pl=document.createElement('label');pl.textContent='Presentation details';const ps=document.createElement('select');[['true','Include when a title is found'],['false','Attendance only']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ps.append(o);});ps.value=optsState.includePresentation!==false?'true':'false';pl.append(ps);
     const centerField=certificateAssetField('Logo below signatures',cfgState.center_logo||getConfig('assets.logo',''),true,['documents','certificates','center_logo']);const stampField=certificateAssetField('Stamp · centered below right signature',cfgState.stamp_logo||'',true,['documents','certificates','stamp_logo']);
@@ -4381,7 +4408,7 @@
     function scheduleRefresh(delay){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,typeof delay==='number'?delay:220);}
     async function pages(report){const people=selectedPeople('certificates');if(!people.length)throw documentValidation('Select at least one person for export.');report(4,'Loading conference assets');await nextPaint();const v=await documentVisualsWithImages(),out=[];for(let i=0;i<people.length;i++){const p=Object.assign({},people[i],{__presentation:presentationForPerson(people[i])});const page=window.DocumentTools.renderCertificatePages([p],options(),v)[0];out.push(page);report(10+((i+1)/people.length)*58,'Rendering certificate '+(i+1)+' / '+people.length);if(i%2===0)await nextPaint();}return out;}
     async function refresh(){const token=++state.documentPreviewToken.certificates;status.classList.remove('hidden');preview.classList.add('is-updating');const person=previewPerson(),v=await documentVisualsWithImages();if(token!==state.documentPreviewToken.certificates)return;const result=window.DocumentTools.renderCertificatePages([person],options(),v);if(token!==state.documentPreviewToken.certificates)return;const name=[person['First Name'],person['Last Name']].filter(Boolean).join(' ')||'Sample person';const stage=documentPreviewStage(result[0],'Certificate preview',name);preview.querySelector('.doc-preview-stage')?.remove();preview.append(stage);status.classList.add('hidden');preview.classList.remove('is-updating');}
-    function persistVisualOptions(reason){cfgState.center_logo=centerField.select.value;cfgState.stamp_logo=stampField.select.value;cfgState.page_margin_mm=20;syncStructuredYaml(reason,{});scheduleRefresh(80);}
+    function persistVisualOptions(reason){cfgState.center_logo=centerField.select.value;cfgState.stamp_logo=stampField.select.value;syncStructuredYaml(reason,{});scheduleRefresh(80);}
     ps.addEventListener('change',()=>{optsState.includePresentation=ps.value==='true';scheduleRefresh(60);});centerField.select.addEventListener('change',()=>persistVisualOptions('documents.certificates.center_logo'));stampField.select.addEventListener('change',()=>persistVisualOptions('documents.certificates.stamp_logo'));
     pdf.addEventListener('click',()=>documentExportButton(pdf,progress,async(report)=>{const canvases=await pages(report);const blob=await window.DocumentTools.buildPdfFromCanvases(canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-certificates.pdf',blob);}));
     docx.addEventListener('click',()=>documentExportButton(docx,progress,async(report)=>{const canvases=await pages(report);const blob=await window.DocumentTools.buildDocxFromCanvases(canvases,(n,l)=>report(68+n*.31,l));downloadBlob((state.projectName||'conference')+'-certificates.docx',blob);}));
