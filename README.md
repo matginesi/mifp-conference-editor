@@ -12,6 +12,7 @@ It is designed to keep the conference workflow simple: edit the website content,
 
 - Create a new conference from the bundled template.
 - Open and edit an existing conference folder.
+- Import a complete conference directly from a ZIP, without extracting it first.
 - Edit `conference.yaml` through a visual editor or directly as YAML.
 - Manage conference pages, important dates, venue, travel, accommodation and social program.
 - Configure the separate registration form.
@@ -110,7 +111,11 @@ A newly created conference starts from the bundled placeholder template, so it d
 
 # Open an existing conference
 
-To continue working on an existing conference:
+You can open a conference in two simple ways.
+
+## Option A — Open a folder
+
+Use this when the conference is already extracted on your computer and you want the editor to write changes directly into its files.
 
 1. Start the editor as described above.
 2. Click **Open conference**.
@@ -122,7 +127,22 @@ To continue working on an existing conference:
 
 When full local-folder access is available, changes are written directly to the conference files.
 
-If the editor says that changes are **staged for ZIP export**, your browser is using fallback mode. Export the conference ZIP to save the modified version.
+## Option B — Import a ZIP
+
+Use this when somebody sent you a conference ZIP, or when you previously created one with **Export ZIP**. You do **not** need to extract it first.
+
+1. Click **Import ZIP**.
+2. Select the `.zip` file.
+3. The editor looks for `conference.yaml` and opens the conference automatically.
+4. If the ZIP contains more than one conference, choose the one you want to edit.
+5. Make your changes.
+6. Click **Export ZIP** to download the updated conference.
+
+ZIP imports run in temporary/fallback mode: the original ZIP is never modified in place. Your changes stay in the current editor session until you export a new ZIP.
+
+The importer accepts ZIPs exported by this editor and ZIPs containing a conference folder or a workspace with multiple conference folders. The `TEMPLATE` folder is not offered as a normal conference.
+
+If the editor says that changes are **staged for ZIP export**, this is expected when working from an imported ZIP or another fallback mode. Export the conference ZIP to save the modified version.
 
 ---
 
@@ -169,7 +189,7 @@ The editor itself uses `templates/conference-template.zip` as the source for **N
 
 A simple workflow is:
 
-**Create/Open conference → edit content → add assets → edit People → edit Program → check → preview → save → export ZIP**
+**Create/Open/Import conference → edit content → add assets → edit People → edit Program → check → preview → save → export ZIP**
 
 The ZIP export is also useful as a backup before making major changes.
 
@@ -215,7 +235,9 @@ If your browser does not support direct folder access, use **Export ZIP** instea
 
 ## `No conference.yaml found`
 
-You selected the wrong folder. Select the conference folder that contains `conference.yaml`, or its direct parent folder.
+For **Open conference**, select the conference folder that contains `conference.yaml`, or a parent folder containing conference folders.
+
+For **Import ZIP**, make sure the archive contains a complete conference with `conference.yaml`, not only images, documents, or a People bundle.
 
 ## Port 8000 is already in use
 
@@ -272,6 +294,6 @@ Copyright © 2026 Matteo Ginesi.
 
 # Current editor version
 
-**1.22.16**
+**1.22.17**
 
-Recent changes include improved certificate logo/stamp placement and sizing, more robust certificate image loading, stable badge/certificate asset pickers, responsive badge controls, and PHP compatibility fixes for the registration form.
+Recent changes include direct conference ZIP import, safer ZIP path validation, improved certificate logo/stamp placement and sizing, more robust certificate image loading, stable badge/certificate asset pickers, responsive badge controls, and PHP compatibility fixes for the registration form.

@@ -2,7 +2,7 @@
   'use strict';
 
   const LOG_PREFIX = '[MIFP-EDITOR]';
-  const EDITOR_VERSION = '1.22.16';
+  const EDITOR_VERSION = '1.22.17';
   const supportsFsAccess = typeof window.showDirectoryPicker === 'function';
   const MAX_LOGS = 500;
   const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','avif']);
@@ -68,10 +68,13 @@
       projectName: $('projectName'),
       openWorkspaceBtn: $('openWorkspaceBtn'),
       folderFallbackInput: $('folderFallbackInput'),
+      importZipBtn: $('importZipBtn'),
+      projectZipInput: $('projectZipInput'),
       projectPickerWrap: $('projectPickerWrap'),
       projectPicker: $('projectPicker'),
       newConferenceBtn: $('newConferenceBtn'),
       welcomeOpenBtn: $('welcomeOpenBtn'),
+      welcomeImportZipBtn: $('welcomeImportZipBtn'),
       welcomeNewBtn: $('welcomeNewBtn'),
       welcomePanel: $('welcomePanel'),
       overviewContent: $('overviewContent'),
@@ -149,7 +152,7 @@
     updateSaveState();
     log('info', 'editor.ready', { editorVersion: EDITOR_VERSION, fsAccess: supportsFsAccess, protocol: location.protocol });
     if (!supportsFsAccess) {
-      log('warn', 'filesystem.direct_write_unavailable', { fallback: 'folder import + downloads' });
+      log('warn', 'filesystem.direct_write_unavailable', { fallback: 'folder/ZIP import + downloads' });
     }
   }
 
@@ -161,6 +164,9 @@
     els.openWorkspaceBtn.addEventListener('click', openWorkspace);
     els.welcomeOpenBtn.addEventListener('click', openWorkspace);
     els.folderFallbackInput.addEventListener('change', importFolderFallback);
+    els.importZipBtn.addEventListener('click', () => els.projectZipInput.click());
+    els.welcomeImportZipBtn.addEventListener('click', () => els.projectZipInput.click());
+    els.projectZipInput.addEventListener('change', importConferenceZip);
     els.projectPicker.addEventListener('change', () => selectProjectByName(els.projectPicker.value));
     els.newConferenceBtn.addEventListener('click', createConferenceFromTemplate);
     els.welcomeNewBtn.addEventListener('click', createConferenceFromTemplate);
@@ -615,6 +621,24 @@
     try { await dirHandle.getFileHandle(name); return true; } catch (_) { return false; }
   }
 
+  function discoverMemoryProjects(directName, files) {
+    const candidates = [];
+    const sourceFiles = files || state.memoryFiles;
+    sourceFiles.forEach((_file, path) => {
+      const normalized = String(path || '').replace(/\\/g, '/');
+      if (normalized === 'conference.yaml') {
+        candidates.push({ name: directName || 'Imported conference', prefix: '', direct: true });
+        return;
+      }
+      if (!normalized.endsWith('/conference.yaml')) return;
+      const prefix = normalized.slice(0, -'conference.yaml'.length);
+      const directory = prefix.replace(/\/$/, '');
+      const name = directory.split('/').filter(Boolean).pop() || directName || 'Imported conference';
+      candidates.push({ name, prefix, direct: false });
+    });
+    return uniqueProjects(candidates);
+  }
+
   async function importFolderFallback(event) {
     const files = Array.from(event.target.files || []);
     event.target.value = '';
@@ -634,15 +658,7 @@
       state.memoryFiles.set(relative, file);
     });
 
-    const candidates = [];
-    state.memoryFiles.forEach((_file, path) => {
-      if (path === 'conference.yaml') candidates.push({ name: topName, prefix: '', direct: true });
-      else if (path.endsWith('/conference.yaml')) {
-        const prefix = path.slice(0, -'conference.yaml'.length);
-        if (!prefix.slice(0, -1).includes('/')) candidates.push({ name: prefix.replace(/\/$/, ''), prefix, direct: false });
-      }
-    });
-    state.projects = uniqueProjects(candidates);
+    state.projects = discoverMemoryProjects(topName);
     const real = realConferenceProjects(state.projects);
     updateWorkspaceUi();
     populateProjectPicker();
@@ -654,6 +670,67 @@
     }
     if (real.length === 1) await loadProject(real[0]);
     else showProjectModal(real);
+  }
+
+  function zipBaseName(filename) {
+    const base = String(filename || 'Imported conference').replace(/\.zip$/i, '');
+    return base.replace(/-v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/i, '') || 'Imported conference';
+  }
+
+  function commonZipRoot(entries) {
+    const names = Array.from(entries.keys()).filter(Boolean);
+    if (!names.length) return '';
+    const roots = names.map((name) => String(name).split('/').filter(Boolean)[0] || '');
+    return roots[0] && roots.every((root) => root === roots[0]) ? roots[0] : '';
+  }
+
+  async function importConferenceZip(event) {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      if (isDirty()) {
+        const proceed = await totemConfirm('Unsaved changes','There are unsaved changes in the current conference. Import another ZIP anyway?','Import anyway',{danger:true});
+        if (!proceed) return;
+      }
+
+      const rawEntries = await readZipEntries(file);
+      if (!rawEntries.size) throw new Error('The ZIP is empty.');
+      const archiveRoot = commonZipRoot(rawEntries);
+      const entries = stripBundleRoot(rawEntries);
+      const directName = archiveRoot || zipBaseName(file.name);
+      const importedFiles = new Map();
+      entries.forEach((blob, path) => { if (path) importedFiles.set(path, blob); });
+      const projects = discoverMemoryProjects(directName, importedFiles);
+      const real = realConferenceProjects(projects);
+      if (!real.length) throw new Error('No conference.yaml found in the ZIP.');
+
+      state.mode = 'memory';
+      state.rootHandle = null;
+      state.projectHandle = null;
+      state.memoryFiles = importedFiles;
+      state.memoryOverrides.clear();
+      state.workspaceName = file.name;
+      state.projects = projects;
+      state.yamlDirty = false;
+      state.regformDirty = false;
+      state.people.dirty = false;
+      state.program.dirty = false;
+      state.versionDirty = false;
+      state.sectionYamlDirty = false;
+      state.sectionYamlDrafts.clear();
+
+      updateWorkspaceUi();
+      populateProjectPicker();
+      log('info', 'workspace.opened_zip', { archive: file.name, files: state.memoryFiles.size, projects: real.map((item) => item.name) });
+      toast('ZIP imported. Changes will be kept in this session until you export a new ZIP.', 'success');
+      if (real.length === 1) await loadProject(real[0]);
+      else showProjectModal(real);
+    } catch (error) {
+      log('error', 'workspace.zip_import_failed', { archive: file.name, message: error.message });
+      toast('Could not import ZIP: ' + error.message, 'error');
+    }
   }
 
   function uniqueProjects(items) {
@@ -2426,7 +2503,10 @@
     for(let i=0;i<count;i++){
       if(zipReadU32(view,offset)!==0x02014B50)throw new Error('Invalid ZIP central directory');
       const method=zipReadU16(view,offset+10),compressedSize=zipReadU32(view,offset+20),nameLen=zipReadU16(view,offset+28),extraLen=zipReadU16(view,offset+30),commentLen=zipReadU16(view,offset+32),localOffset=zipReadU32(view,offset+42);
-      const name=decoder.decode(bytes.subarray(offset+46,offset+46+nameLen)).replace(/\\/g,'/');offset+=46+nameLen+extraLen+commentLen;if(name.endsWith('/'))continue;
+      const rawName=decoder.decode(bytes.subarray(offset+46,offset+46+nameLen)).replace(/\\/g,'/');offset+=46+nameLen+extraLen+commentLen;if(rawName.endsWith('/'))continue;
+      if(!rawName||rawName.startsWith('/')||/^[A-Za-z]:\//.test(rawName)||rawName.includes('\u0000'))throw new Error('Unsafe ZIP path: '+rawName);
+      const pathParts=rawName.split('/').filter(Boolean);if(!pathParts.length||pathParts.some((part)=>part==='.'||part==='..'))throw new Error('Unsafe ZIP path: '+rawName);
+      const name=pathParts.join('/');
       if(zipReadU32(view,localOffset)!==0x04034B50)throw new Error('Invalid ZIP entry: '+name);
       const localNameLen=zipReadU16(view,localOffset+26),localExtraLen=zipReadU16(view,localOffset+28),start=localOffset+30+localNameLen+localExtraLen,compressed=bytes.subarray(start,start+compressedSize);
       let data;if(method===0)data=compressed.slice();else if(method===8)data=await inflateZipRaw(compressed);else throw new Error('Unsupported ZIP compression method '+method+' for '+name);
